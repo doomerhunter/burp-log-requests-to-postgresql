@@ -1,8 +1,8 @@
 > [!NOTE]
-> A migration to the [Montoya](https://github.com/PortSwigger/burp-extensions-montoya-api) model of extension was kindly performed by [@dominiqueroux](https://github.com/dominiqueroux) 🧡.
+> This extension was mainly developed by [righettod](https://github.com/righettod). Thank you very much!
 
-[![NightBuild](https://github.com/righettod/log-requests-to-sqlite/workflows/NightBuild/badge.svg)](https://github.com/righettod/log-requests-to-sqlite/actions)
-[![Known Vulnerabilities](https://snyk.io/test/github/righettod/log-requests-to-sqlite/badge.svg?targetFile=build.gradle)](https://snyk.io/test/github/righettod/log-requests-to-sqlite?targetFile=build.gradle)
+<!-- [![NightBuild](https://github.com/righettod/log-requests-to-sqlite/workflows/NightBuild/badge.svg)](https://github.com/righettod/log-requests-to-sqlite/actions)
+[![Known Vulnerabilities](https://snyk.io/test/github/righettod/log-requests-to-sqlite/badge.svg?targetFile=build.gradle)](https://snyk.io/test/github/righettod/log-requests-to-sqlite?targetFile=build.gradle) -->
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![BAppStore Version](https://img.shields.io/badge/BApp%20Store-v2.0.0-orange.svg)](https://portswigger.net/bappstore/d916d94506734f3490e49391595d8747)
 
@@ -101,9 +101,9 @@ Use the following command and the JAR file **LogRequestsToSQLite.jar** will be l
 $ mvn clean package
 ```
 
-# Night build
+<!-- # Night build
 
-See the [Actions](https://github.com/righettod/log-requests-to-sqlite/actions) section.
+See the [Actions](https://github.com/righettod/log-requests-to-sqlite/actions) section. -->
 
 # BApp Store
 
@@ -114,11 +114,16 @@ The extension is referenced [here](https://portswigger.net/bappstore/d916d945067
 Procedure kindly provided by the PortSwigger support:
 
 1. BApp Author commits fixes/updates to the master repository.
-2. Once BApp Author is happy that updates need to be pushed to the BApp store, the Author creates a pull request so changes can be merged into the forked repository: `righettod wants to merge xx commits into PortSwigger:master from righettod:master`
+2. Once BApp Author is happy that updates need to be pushed to the BApp store, the Author creates a pull request so changes can be merged into the forked repository: `Redguard wants to merge xx commits into PortSwigger:master from redguard:master`
 3. BApp Author notifies PortSwigger support that changes need to be merged, support staff reviews changes and then accepts pull request so the changes are merged.
 4. BApp is then compiled from the forked repository version and then pushed to the BApp store.
 
 # Change log
+
+**3.0.0**
+
+* Migration to the Montoya API.
+* Migration from gradle to maven. Thanks to [righettod](https://github.com/righettod).
 
 **2.0.0**
 
