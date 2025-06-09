@@ -89,14 +89,30 @@ class ActivityHttpListener implements HttpHandler {
     private boolean mustLogRequest(HttpRequest request, String toolName) {
         //By default: Request is logged
         boolean mustLogRequest = true;
+        String url = request.url();
+
+        //this.trace.writeLog("DEBUG: Checking request from " + toolName + " to " + url);
 
         //Initially we check the pause state
         if (ConfigMenu.IS_LOGGING_PAUSED) {
             mustLogRequest = false;
+            //this.trace.writeLog("DEBUG: Request filtered out - logging is paused");
         } else {
             //First: We check if we must apply restriction about tool source
-            if (ConfigMenu.FILTER_BY_TOOL_SOURCE && !ConfigMenu.INCLUDED_TOOL_SOURCES.contains(toolName)) {
-                mustLogRequest = false;
+            if (ConfigMenu.FILTER_BY_TOOL_SOURCE) {
+                // Debug logging to see actual tool names
+                //this.trace.writeLog("Received tool name: '" + toolName + "', Included tools: " + ConfigMenu.INCLUDED_TOOL_SOURCES.toString());
+                
+                // Check if any of the included tool sources match (case-insensitive)
+                boolean toolMatches = ConfigMenu.INCLUDED_TOOL_SOURCES.stream()
+                    .anyMatch(includedTool -> includedTool.equalsIgnoreCase(toolName));
+                
+                if (!toolMatches) {
+                    mustLogRequest = false;
+                    //this.trace.writeLog("DEBUG: Request from tool '" + toolName + "' filtered out by tool source filter.");
+                } else {
+                    //this.trace.writeLog("DEBUG: Tool '" + toolName + "' passed tool source filter.");
+                }
             }
             //Second: We check if we must apply restriction about image resource
             //Configuration restrictions options are applied in sequence so we only work here if the request is marked to be logged
@@ -113,6 +129,7 @@ class ActivityHttpListener implements HttpHandler {
                     String extension = filename.substring(filename.lastIndexOf('.') + 1).trim().toLowerCase(Locale.US);
                     if (ConfigMenu.IMAGE_RESOURCE_EXTENSIONS.contains(extension)) {
                         mustLogRequest = false;
+                        //this.trace.writeLog("DEBUG: Request filtered out - image resource with extension: " + extension);
                     }
                 }
             }
@@ -120,9 +137,11 @@ class ActivityHttpListener implements HttpHandler {
             //Configuration restrictions options are applied in sequence so we only work here if the request is marked to be logged
             if (mustLogRequest && ConfigMenu.ONLY_INCLUDE_REQUESTS_FROM_SCOPE && ! request.isInScope()) {
                 mustLogRequest = false;
+                //this.trace.writeLog("DEBUG: Request filtered out - not in scope: " + url);
             }
         }
 
+        //this.trace.writeLog("DEBUG: Final decision for " + toolName + " request to " + url + ": " + (mustLogRequest ? "LOGGED" : "FILTERED"));
         return mustLogRequest;
 
     }

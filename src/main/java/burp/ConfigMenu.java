@@ -192,7 +192,7 @@ public class ConfigMenu implements Runnable {
             }
         } else {
             // Default: include all tools if no preference is set
-            Collections.addAll(INCLUDED_TOOL_SOURCES, "Spider", "Intruder", "Scanner", "Repeater", "Sequencer", "Proxy", "Target", "Extender");
+            Collections.addAll(INCLUDED_TOOL_SOURCES, "Proxy", "Repeater", "Intruder", "Scanner", "Sequencer", "Spider", "Target", "Extender");
         }
     }
 
@@ -417,7 +417,7 @@ public class ConfigMenu implements Runnable {
                     FILTER_BY_TOOL_SOURCE = Boolean.FALSE;
                     // Reset to include all tools
                     INCLUDED_TOOL_SOURCES.clear();
-                    Collections.addAll(INCLUDED_TOOL_SOURCES, "Spider", "Intruder", "Scanner", "Repeater", "Sequencer", "Proxy", "Target", "Extender");
+                    Collections.addAll(INCLUDED_TOOL_SOURCES, "Proxy", "Repeater", "Intruder", "Scanner", "Sequencer", "Spider", "Target", "Extender");
                     ConfigMenu.this.trace.writeLog("Tool source filtering disabled. All tools will be logged.");
                 }
             }
@@ -595,12 +595,17 @@ public class ConfigMenu implements Runnable {
      * @return true if user confirmed the selection, false if cancelled
      */
     private boolean showToolSelectionDialog() {
-        String[] allTools = {"Spider", "Intruder", "Scanner", "Repeater", "Sequencer", "Proxy", "Target", "Extender"};
+        // Include both lowercase and uppercase versions to handle API variations
+        String[] allTools = {"Proxy", "Repeater", "Intruder", "Scanner", "Sequencer", "Spider", "Target", "Extender"};
         JCheckBox[] checkBoxes = new JCheckBox[allTools.length];
         
         // Create checkboxes and set their initial state based on current included tools
         for (int i = 0; i < allTools.length; i++) {
-            checkBoxes[i] = new JCheckBox(allTools[i], INCLUDED_TOOL_SOURCES.contains(allTools[i]));
+            // Check for case-insensitive match
+            final String currentTool = allTools[i]; // Make it final for lambda
+            boolean isChecked = INCLUDED_TOOL_SOURCES.stream()
+                .anyMatch(includedTool -> includedTool.equalsIgnoreCase(currentTool));
+            checkBoxes[i] = new JCheckBox(currentTool, isChecked);
         }
         
         // Create a panel to hold the checkboxes
@@ -630,6 +635,7 @@ public class ConfigMenu implements Runnable {
                     INCLUDED_TOOL_SOURCES.add(allTools[i]);
                 }
             }
+            this.trace.writeLog("Tool selection updated. New included tools: " + INCLUDED_TOOL_SOURCES.toString());
             return true;
         }
         
