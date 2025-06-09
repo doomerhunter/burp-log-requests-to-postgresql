@@ -13,7 +13,7 @@ class ActivityHttpListener implements HttpHandler {
     /**
      * Ref on handler that will store the activity information into the activity log storage.
      */
-    private ActivityLogger activityLogger;
+    private ActivityStorage activityStorage;
 
     /**
      * Ref on project logger.
@@ -23,11 +23,11 @@ class ActivityHttpListener implements HttpHandler {
     /**
      * Constructor.
      *
-     * @param activityLogger    Ref on handler that will store the activity information into the activity log storage.
+     * @param activityStorage   Ref on handler that will store the activity information into the activity log storage.
      * @param trace             Ref on project logger.
      */
-    ActivityHttpListener(ActivityLogger activityLogger, Trace trace) {
-        this.activityLogger = activityLogger;
+    ActivityHttpListener(ActivityStorage activityStorage, Trace trace) {
+        this.activityStorage = activityStorage;
         this.trace = trace;
     }
 
@@ -38,7 +38,7 @@ class ActivityHttpListener implements HttpHandler {
         if (!ConfigMenu.INCLUDE_HTTP_RESPONSE_CONTENT) {
             try {
                 if (this.mustLogRequest(requestToBeSent)) {
-                    this.activityLogger.logEvent(requestToBeSent, null, requestToBeSent.toolSource().toolType().toolName());
+                    this.activityStorage.logEvent(requestToBeSent, null, requestToBeSent.toolSource().toolType().toolName());
                 }
             } catch (Exception e) {
                 this.trace.writeLog("Cannot save request: " + e.getMessage());
@@ -57,7 +57,7 @@ class ActivityHttpListener implements HttpHandler {
             try {
                 //Save the information of the current request if the message is an HTTP response and according to the restriction options
                 if (this.mustLogRequest(responseReceived.initiatingRequest())) {
-                    this.activityLogger.logEvent(responseReceived.initiatingRequest(), responseReceived, responseReceived.toolSource().toolType().toolName());
+                    this.activityStorage.logEvent(responseReceived.initiatingRequest(), responseReceived, responseReceived.toolSource().toolType().toolName());
                 }
             } catch (Exception e) {
                 this.trace.writeLog("Cannot save response: " + e.getMessage());

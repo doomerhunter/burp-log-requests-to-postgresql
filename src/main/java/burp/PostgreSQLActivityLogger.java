@@ -1,7 +1,6 @@
 package burp;
 
 import java.net.InetAddress;
-import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -20,20 +19,36 @@ import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.extension.ExtensionUnloadingHandler;
 
 /**
- * Handle the recording of the activities into the real storage, SQLite local DB here.
- * Now uses async writes with a background thread for improved performance.
+ * Handle the recording of the activities into PostgreSQL database.
+ * Uses async writes with a background thread for improved performance.
  */
-class ActivityLogger implements ActivityStorage {
+class PostgreSQLActivityLogger implements ActivityStorage {
 
     /**
-     * SQL instructions.
+     * SQL instructions for PostgreSQL.
      */
-    private static final String SQL_TABLE_CREATE = "CREATE TABLE IF NOT EXISTS ACTIVITY (LOCAL_SOURCE_IP TEXT, TARGET_URL TEXT, HTTP_METHOD TEXT, BURP_TOOL TEXT, REQUEST_RAW TEXT, SEND_DATETIME TEXT, HTTP_STATUS_CODE TEXT, RESPONSE_RAW TEXT)";
-    private static final String SQL_TABLE_INSERT = "INSERT INTO ACTIVITY (LOCAL_SOURCE_IP,TARGET_URL,HTTP_METHOD,BURP_TOOL,REQUEST_RAW,SEND_DATETIME,HTTP_STATUS_CODE,RESPONSE_RAW) VALUES(?,?,?,?,?,?,?,?)";
-    private static final String SQL_COUNT_RECORDS = "SELECT COUNT(HTTP_METHOD) FROM ACTIVITY";
-    private static final String SQL_TOTAL_AMOUNT_DATA_SENT = "SELECT TOTAL(LENGTH(REQUEST_RAW)) FROM ACTIVITY";
-    private static final String SQL_BIGGEST_REQUEST_AMOUNT_DATA_SENT = "SELECT MAX(LENGTH(REQUEST_RAW)) FROM ACTIVITY";
-    private static final String SQL_MAX_HITS_BY_SECOND = "SELECT COUNT(REQUEST_RAW) AS HITS, SEND_DATETIME FROM ACTIVITY GROUP BY SEND_DATETIME ORDER BY HITS DESC";
+    private static final String SQL_TABLE_CREATE = "CREATE TABLE IF NOT EXISTS ACTIVITY (" +
+            "id SERIAL PRIMARY KEY, " +
+            "local_source_ip TEXT, " +
+            "target_url TEXT, " +
+            "http_method TEXT, " +
+            "burp_tool TEXT, " +
+            "request_raw TEXT, " +
+            "send_datetime TIMESTAMP, " +
+            "http_status_code TEXT, " +
+            "response_raw TEXT, " +
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)";
+
+    private static final String SQL_TABLE_INSERT = "INSERT INTO ACTIVITY " +
+            "(local_source_ip, target_url, http_method, burp_tool, request_raw, send_datetime, http_status_code, response_raw) " +
+            "VALUES(?,?,?,?,?,?::timestamp,?,?)";
+
+    private static final String SQL_COUNT_RECORDS = "SELECT COUNT(http_method) FROM ACTIVITY";
+    private static final String SQL_TOTAL_AMOUNT_DATA_SENT = "SELECT SUM(LENGTH(request_raw)) FROM ACTIVITY";
+    private static final String SQL_BIGGEST_REQUEST_AMOUNT_DATA_SENT = "SELECT MAX(LENGTH(request_raw)) FROM ACTIVITY";
+    private static final String SQL_MAX_HITS_BY_SECOND = "SELECT COUNT(request_raw) AS hits, " +
+            "DATE_TRUNC('second', send_datetime) as second_bucket " +
+            "FROM ACTIVITY GROUP BY second_bucket ORDER BY hits DESC LIMIT 1";
 
     /**
      * Maximum queue size to prevent memory issues
@@ -51,14 +66,18 @@ class ActivityLogger implements ActivityStorage {
     private static final long BATCH_TIMEOUT_MS = 1000;
 
     /**
-     * Use a single DB connection for performance and to prevent DB file locking issue at filesystem level.
+     * Use a single DB connection for performance.
      */
     private Connection storageConnection;
 
     /**
-     * DB URL
+     * Database connection parameters
      */
-    private String url;
+    private String host;
+    private int port;
+    private String database;
+    private String username;
+    private String password;
 
     /**
      * Ref on project logger.
@@ -88,26 +107,52 @@ class ActivityLogger implements ActivityStorage {
     /**
      * Constructor.
      *
-     * @param storeName     Name of the storage that will be created (file path).
+     * @param host          PostgreSQL host
+     * @param port          PostgreSQL port
+     * @param database      Database name
+     * @param username      Database username
+     * @param password      Database password
+     * @param api           Montoya API reference
      * @param trace         Ref on project logger.
      * @throws Exception    If connection with the DB cannot be opened or if the DB cannot be created or if the JDBC driver cannot be loaded.
      */
-    ActivityLogger(String storeName, MontoyaApi api, Trace trace) throws Exception {
-        //Load the SQLite driver
-        Class.forName("org.sqlite.JDBC");
+    PostgreSQLActivityLogger(String host, int port, String database, String username, String password, MontoyaApi api, Trace trace) throws Exception {
+        //Load the PostgreSQL driver
+        Class.forName("org.postgresql.Driver");
         this.trace = trace;
-        updateStoreLocation(storeName);
+        this.host = host;
+        this.port = port;
+        this.database = database;
+        this.username = username;
+        this.password = password;
+        
+        initializeConnection();
         startWriterThread();
+    }
+
+    /**
+     * Initialize the database connection and create table if needed
+     */
+    private void initializeConnection() throws Exception {
+        String url = String.format("jdbc:postgresql://%s:%d/%s", host, port, database);
+        this.storageConnection = DriverManager.getConnection(url, username, password);
+        this.storageConnection.setAutoCommit(true);
+        this.trace.writeLog("Connected to PostgreSQL database at " + host + ":" + port + "/" + database);
+        
+        try (Statement stmt = this.storageConnection.createStatement()) {
+            stmt.execute(SQL_TABLE_CREATE);
+            this.trace.writeLog("PostgreSQL recording table initialized.");
+        }
     }
 
     /**
      * Start the background writer thread
      */
     private void startWriterThread() {
-        writerThread = new Thread(this::processEventQueue, "ActivityLogger-Writer");
+        writerThread = new Thread(this::processEventQueue, "PostgreSQLActivityLogger-Writer");
         writerThread.setDaemon(true);
         writerThread.start();
-        this.trace.writeLog("Async writer thread started.");
+        this.trace.writeLog("PostgreSQL async writer thread started.");
     }
 
     /**
@@ -144,7 +189,16 @@ class ActivityLogger implements ActivityStorage {
                 Thread.currentThread().interrupt();
                 break;
             } catch (Exception e) {
-                this.trace.writeLog("Error in writer thread: " + e.getMessage());
+                this.trace.writeLog("Error in PostgreSQL writer thread: " + e.getMessage());
+                // Try to reconnect if connection issues
+                try {
+                    if (this.storageConnection.isClosed()) {
+                        initializeConnection();
+                        this.trace.writeLog("Reconnected to PostgreSQL database.");
+                    }
+                } catch (Exception reconnectEx) {
+                    this.trace.writeLog("Failed to reconnect to PostgreSQL: " + reconnectEx.getMessage());
+                }
             }
         }
         
@@ -185,7 +239,7 @@ class ActivityLogger implements ActivityStorage {
             }
             
             if (successCount != count) {
-                this.trace.writeLog("Batch insert: " + successCount + "/" + count + " events inserted successfully");
+                this.trace.writeLog("PostgreSQL batch insert: " + successCount + "/" + count + " events inserted successfully");
             }
             
         } catch (Exception e) {
@@ -213,9 +267,9 @@ class ActivityLogger implements ActivityStorage {
         if (count > 0) {
             try {
                 writeBatch(batch, count);
-                this.trace.writeLog("Flushed " + count + " remaining events during shutdown.");
+                this.trace.writeLog("PostgreSQL flushed " + count + " remaining events during shutdown.");
             } catch (Exception e) {
-                this.trace.writeLog("Error flushing remaining events: " + e.getMessage());
+                this.trace.writeLog("Error flushing remaining PostgreSQL events: " + e.getMessage());
             }
         }
     }
@@ -247,79 +301,100 @@ class ActivityLogger implements ActivityStorage {
             // Add to queue (non-blocking)
             if (!eventQueue.offer(event)) {
                 // Queue is full - could log a warning or implement backpressure
-                this.trace.writeLog("Event queue full, dropping event. Consider adjusting MAX_QUEUE_SIZE.");
+                this.trace.writeLog("PostgreSQL event queue full, dropping event. Consider adjusting MAX_QUEUE_SIZE.");
             }
             
         } catch (Exception e) {
-            this.trace.writeLog("Error queueing event: " + e.getMessage());
+            this.trace.writeLog("Error queueing PostgreSQL event: " + e.getMessage());
             // Could fallback to synchronous write in critical cases
         }
     }
 
     /**
-     * Change the location where DB is stored.
+     * Update database connection parameters and reconnect.
      *
-     * @param storeName Name of the storage that will be created (file path).
-     * @throws Exception If connection with the DB cannot be opened or if the DB cannot be created or if the JDBC driver cannot be loaded.
+     * @param host          PostgreSQL host
+     * @param port          PostgreSQL port
+     * @param database      Database name
+     * @param username      Database username
+     * @param password      Database password
+     * @throws Exception    If connection with the DB cannot be opened or if the DB cannot be created.
      */
-    void updateStoreLocation(String storeName) throws Exception {
-        String newUrl = "jdbc:sqlite:" + storeName;
-        this.url = newUrl;
-        this.trace.writeLog("Activity information will be stored in database file '" + storeName + "'.");
-        this.storageConnection = DriverManager.getConnection(newUrl);
-        this.storageConnection.setAutoCommit(true);
-        this.trace.writeLog("Open new connection to the storage.");
-        try (Statement stmt = this.storageConnection.createStatement()) {
-            stmt.execute(SQL_TABLE_CREATE);
-            this.trace.writeLog("Recording table initialized.");
+    void updateConnectionParameters(String host, int port, String database, String username, String password) throws Exception {
+        this.host = host;
+        this.port = port;
+        this.database = database;
+        this.username = username;
+        this.password = password;
+        
+        // Close existing connection
+        if (this.storageConnection != null && !this.storageConnection.isClosed()) {
+            this.storageConnection.close();
         }
+        
+        // Create new connection
+        initializeConnection();
+        this.trace.writeLog("PostgreSQL connection parameters updated and reconnected.");
     }
 
     /**
      * Extract and compute statistics about the DB.
      *
      * @return A VO object containing the statistics.
-     * @throws Exception If computation meet and error.
+     * @throws Exception If computation meets an error.
      */
     public DBStats getEventsStats() throws Exception {
         //Verify that the DB connection is still opened
         this.ensureDBState();
+        
         //Get the total of the records in the activity table
         long recordsCount;
         try (PreparedStatement stmt = this.storageConnection.prepareStatement(SQL_COUNT_RECORDS)) {
             try (ResultSet rst = stmt.executeQuery()) {
-                recordsCount = rst.getLong(1);
+                recordsCount = rst.next() ? rst.getLong(1) : 0;
             }
         }
+        
         //Get data amount if the DB is not empty
         long totalAmountDataSent = 0;
         long biggestRequestAmountDataSent = 0;
         long maxHitsBySecond = 0;
+        
         if (recordsCount > 0) {
             //Get the total amount of data sent, we assume here that 1 character = 1 byte
             try (PreparedStatement stmt = this.storageConnection.prepareStatement(SQL_TOTAL_AMOUNT_DATA_SENT)) {
                 try (ResultSet rst = stmt.executeQuery()) {
-                    totalAmountDataSent = rst.getLong(1);
+                    if (rst.next()) {
+                        totalAmountDataSent = rst.getLong(1);
+                    }
                 }
             }
+            
             //Get the amount of data sent by the biggest request, we assume here that 1 character = 1 byte
             try (PreparedStatement stmt = this.storageConnection.prepareStatement(SQL_BIGGEST_REQUEST_AMOUNT_DATA_SENT)) {
                 try (ResultSet rst = stmt.executeQuery()) {
-                    biggestRequestAmountDataSent = rst.getLong(1);
+                    if (rst.next()) {
+                        biggestRequestAmountDataSent = rst.getLong(1);
+                    }
                 }
             }
+            
             //Get the maximum number of hits sent in a second
             try (PreparedStatement stmt = this.storageConnection.prepareStatement(SQL_MAX_HITS_BY_SECOND)) {
                 try (ResultSet rst = stmt.executeQuery()) {
-                    maxHitsBySecond = rst.getLong(1);
+                    if (rst.next()) {
+                        maxHitsBySecond = rst.getLong(1);
+                    }
                 }
             }
         }
-        //Get the size of the file on the disk
-        String fileLocation = this.url.replace("jdbc:sqlite:", "").trim();
-        long fileSize = Paths.get(fileLocation).toFile().length();
+        
+        //For PostgreSQL, we'll estimate DB size based on table statistics
+        //This is an approximation since PostgreSQL doesn't have a simple file size equivalent
+        long estimatedSize = recordsCount * 1024; // Rough estimate
+        
         //Build the VO and return it
-        return new DBStats(fileSize, recordsCount, totalAmountDataSent, biggestRequestAmountDataSent, maxHitsBySecond);
+        return new DBStats(estimatedSize, recordsCount, totalAmountDataSent, biggestRequestAmountDataSent, maxHitsBySecond);
     }
 
     /**
@@ -331,9 +406,8 @@ class ActivityLogger implements ActivityStorage {
         //Verify that the DB connection is still opened
         if (this.storageConnection.isClosed()) {
             //Get new one
-            this.trace.writeLog("Open new connection to the storage.");
-            this.storageConnection = DriverManager.getConnection(url);
-            this.storageConnection.setAutoCommit(true);
+            this.trace.writeLog("PostgreSQL connection lost, reconnecting...");
+            initializeConnection();
         }
     }
 
@@ -350,9 +424,9 @@ class ActivityLogger implements ActivityStorage {
             try {
                 writerThread.interrupt();
                 writerThread.join(5000); // Wait up to 5 seconds
-                this.trace.writeLog("Writer thread stopped.");
+                this.trace.writeLog("PostgreSQL writer thread stopped.");
             } catch (InterruptedException e) {
-                this.trace.writeLog("Interrupted while waiting for writer thread to finish.");
+                this.trace.writeLog("Interrupted while waiting for PostgreSQL writer thread to finish.");
                 Thread.currentThread().interrupt();
             }
         }
@@ -361,10 +435,10 @@ class ActivityLogger implements ActivityStorage {
         try {
             if (this.storageConnection != null && !this.storageConnection.isClosed()) {
                 this.storageConnection.close();
-                this.trace.writeLog("Connection to the storage released.");
+                this.trace.writeLog("PostgreSQL connection released.");
             }
         } catch (Exception e) {
-            this.trace.writeLog("Cannot close the connection to the storage: " + e.getMessage());
+            this.trace.writeLog("Cannot close the PostgreSQL connection: " + e.getMessage());
         }
     }
 
@@ -393,4 +467,4 @@ class ActivityLogger implements ActivityStorage {
             this.responseRaw = responseRaw;
         }
     }
-}
+} 

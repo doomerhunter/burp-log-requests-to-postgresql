@@ -50,6 +50,11 @@ public class ConfigMenu implements Runnable {
     static volatile boolean IS_LOGGING_PAUSED = Boolean.FALSE;
 
     /**
+     * Expose the configuration option to choose storage type (SQLite or PostgreSQL).
+     */
+    static volatile boolean USE_POSTGRESQL = Boolean.FALSE;
+
+    /**
      * Option configuration key for the restriction of the logging of requests in defined target scope.
      */
     private static final String ONLY_INCLUDE_REQUESTS_FROM_SCOPE_CFG_KEY = "ONLY_INCLUDE_REQUESTS_FROM_SCOPE";
@@ -75,6 +80,20 @@ public class ConfigMenu implements Runnable {
     public static final String INCLUDE_HTTP_RESPONSE_CONTENT_CFG_KEY = "INCLUDE_HTTP_RESPONSE_CONTENT";
 
     /**
+     * Option configuration key for using PostgreSQL instead of SQLite.
+     */
+    public static final String USE_POSTGRESQL_CFG_KEY = "USE_POSTGRESQL";
+
+    /**
+     * PostgreSQL configuration keys.
+     */
+    public static final String POSTGRESQL_HOST_CFG_KEY = "POSTGRESQL_HOST";
+    public static final String POSTGRESQL_PORT_CFG_KEY = "POSTGRESQL_PORT";
+    public static final String POSTGRESQL_DATABASE_CFG_KEY = "POSTGRESQL_DATABASE";
+    public static final String POSTGRESQL_USERNAME_CFG_KEY = "POSTGRESQL_USERNAME";
+    public static final String POSTGRESQL_PASSWORD_CFG_KEY = "POSTGRESQL_PASSWORD";
+
+    /**
      * Extension root configuration menu.
      */
     private JMenu cfgMenu;
@@ -95,21 +114,21 @@ public class ConfigMenu implements Runnable {
     private Trace trace;
 
     /**
-     * Ref on activity logger in order to enable the access to the DB statistics.
+     * Ref on activity storage in order to enable the access to the DB statistics.
      */
-    private ActivityLogger activityLogger;
+    private ActivityStorage activityStorage;
 
     /**
      * Constructor.
      *
-     * @param api            The MontoyaAPI object used for accessing all the Burp features and ressources such as requests and responses.
-     * @param trace          Ref on project logger.
-     * @param activityLogger Ref on activity logger in order to enable the access to the DB statistics.
+     * @param api             The MontoyaAPI object used for accessing all the Burp features and ressources such as requests and responses.
+     * @param trace           Ref on project logger.
+     * @param activityStorage Ref on activity storage in order to enable the access to the DB statistics.
      */
-    ConfigMenu(MontoyaApi api, Trace trace, ActivityLogger activityLogger) {
+    ConfigMenu(MontoyaApi api, Trace trace, ActivityStorage activityStorage) {
         this.api = api;
         this.trace = trace;
-        this.activityLogger = activityLogger;
+        this.activityStorage = activityStorage;
         this.preferences = this.api.persistence().preferences();
 
         String value;
@@ -126,6 +145,7 @@ public class ConfigMenu implements Runnable {
         EXCLUDE_IMAGE_RESOURCE_REQUESTS = Boolean.TRUE.equals(this.preferences.getBoolean(EXCLUDE_IMAGE_RESOURCE_REQUESTS_CFG_KEY));
         IS_LOGGING_PAUSED = Boolean.TRUE.equals(this.preferences.getBoolean(PAUSE_LOGGING_CFG_KEY));
         INCLUDE_HTTP_RESPONSE_CONTENT = Boolean.TRUE.equals(this.preferences.getBoolean(INCLUDE_HTTP_RESPONSE_CONTENT_CFG_KEY));
+        USE_POSTGRESQL = Boolean.TRUE.equals(this.preferences.getBoolean(USE_POSTGRESQL_CFG_KEY));
     }
 
     /**
@@ -134,7 +154,7 @@ public class ConfigMenu implements Runnable {
     @Override
     public void run() {
         //Build the menu
-        this.cfgMenu = new JMenu("Log Requests to SQLite");
+        this.cfgMenu = new JMenu("Log Requests to Database");
         //Add the sub menu to restrict the logging of requests in defined target scope
         String menuText = "Log only requests from defined target scope";
         final JCheckBoxMenuItem subMenuRestrictToScope = new JCheckBoxMenuItem(menuText, ONLY_INCLUDE_REQUESTS_FROM_SCOPE);
@@ -186,6 +206,52 @@ public class ConfigMenu implements Runnable {
             }
         });
         this.cfgMenu.add(subMenuIncludeHttpResponseContent);
+        //Add the menu to choose storage type
+        menuText = "Use PostgreSQL instead of SQLite";
+        final JCheckBoxMenuItem subMenuUsePostgreSQL = new JCheckBoxMenuItem(menuText, USE_POSTGRESQL);
+        subMenuUsePostgreSQL.addActionListener(new AbstractAction(menuText) {
+            public void actionPerformed(ActionEvent e) {
+                if (subMenuUsePostgreSQL.isSelected()) {
+                    // Show PostgreSQL configuration dialog
+                    if (ActivityStorageFactory.showPostgreSQLConfigDialog(ConfigMenu.this.preferences, ConfigMenu.getBurpFrame())) {
+                        ConfigMenu.this.preferences.setBoolean(USE_POSTGRESQL_CFG_KEY, Boolean.TRUE);
+                        ConfigMenu.USE_POSTGRESQL = Boolean.TRUE;
+                        ConfigMenu.this.trace.writeLog("PostgreSQL storage enabled. Restart Burp to apply changes.");
+                        JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), 
+                            "PostgreSQL storage configured. Please restart Burp Suite to apply changes.", 
+                            "Configuration Updated", 
+                            JOptionPane.INFORMATION_MESSAGE);
+                    } else {
+                        // User cancelled, revert checkbox
+                        subMenuUsePostgreSQL.setSelected(false);
+                    }
+                } else {
+                    ConfigMenu.this.preferences.setBoolean(USE_POSTGRESQL_CFG_KEY, Boolean.FALSE);
+                    ConfigMenu.USE_POSTGRESQL = Boolean.FALSE;
+                    ConfigMenu.this.trace.writeLog("SQLite storage enabled. Restart Burp to apply changes.");
+                    JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), 
+                        "SQLite storage configured. Please restart Burp Suite to apply changes.", 
+                        "Configuration Updated", 
+                        JOptionPane.INFORMATION_MESSAGE);
+                }
+            }
+        });
+        this.cfgMenu.add(subMenuUsePostgreSQL);
+        //Add the menu to configure PostgreSQL connection
+        menuText = "Configure PostgreSQL Connection";
+        final JMenuItem subMenuConfigurePostgreSQL = new JMenuItem(menuText);
+        subMenuConfigurePostgreSQL.addActionListener(new AbstractAction(menuText) {
+            public void actionPerformed(ActionEvent e) {
+                if (ActivityStorageFactory.showPostgreSQLConfigDialog(ConfigMenu.this.preferences, ConfigMenu.getBurpFrame())) {
+                    ConfigMenu.this.trace.writeLog("PostgreSQL connection parameters updated.");
+                    JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), 
+                        "PostgreSQL connection parameters updated. Restart Burp Suite to apply changes.", 
+                        "Configuration Updated", 
+                        JOptionPane.INFORMATION_MESSAGE);
+                }
+            }
+        });
+        this.cfgMenu.add(subMenuConfigurePostgreSQL);
         //Add the menu to pause the logging
         menuText = "Pause the logging";
         final JCheckBoxMenuItem subMenuPauseTheLogging = new JCheckBoxMenuItem(menuText, IS_LOGGING_PAUSED);
@@ -205,14 +271,18 @@ public class ConfigMenu implements Runnable {
             }
         });
         this.cfgMenu.add(subMenuPauseTheLogging);
-        //Add the menu to change the DB file
-        menuText = "Change the DB file";
+        //Add the menu to change the DB file (SQLite only)
+        menuText = "Change the SQLite DB file";
         final JMenuItem subMenuDBFileLocationMenuItem = new JMenuItem(menuText);
         subMenuDBFileLocationMenuItem.addActionListener(
                 new AbstractAction(menuText) {
                     public void actionPerformed(ActionEvent e) {
                         try {
-                            String title = "Change the DB file";
+                            String title = "Change the SQLite DB file";
+                            if (ConfigMenu.USE_POSTGRESQL) {
+                                JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), "This option is only available when using SQLite storage.", title, JOptionPane.WARNING_MESSAGE);
+                                return;
+                            }
                             if (!ConfigMenu.IS_LOGGING_PAUSED) {
                                 JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), "Logging must be paused prior to update the DB file location!", title, JOptionPane.WARNING_MESSAGE);
                             } else {
@@ -221,9 +291,14 @@ public class ConfigMenu implements Runnable {
                                 int dbFileSelectionReply = customStoreFileNameFileChooser.showDialog(getBurpFrame(), "Use");
                                 if (dbFileSelectionReply == JFileChooser.APPROVE_OPTION) {
                                     customStoreFileName = customStoreFileNameFileChooser.getSelectedFile().getAbsolutePath().replaceAll("\\\\", "/");
-                                    activityLogger.updateStoreLocation(customStoreFileName);
-                                    ConfigMenu.this.preferences.setString(ConfigMenu.DB_FILE_CUSTOM_LOCATION_CFG_KEY, customStoreFileName);
-                                    JOptionPane.showMessageDialog(getBurpFrame(), "DB file updated to use:\n\r" + customStoreFileName, title, JOptionPane.INFORMATION_MESSAGE);
+                                    // Only works with SQLite ActivityLogger
+                                    if (ConfigMenu.this.activityStorage instanceof ActivityLogger) {
+                                        ((ActivityLogger) ConfigMenu.this.activityStorage).updateStoreLocation(customStoreFileName);
+                                        ConfigMenu.this.preferences.setString(ConfigMenu.DB_FILE_CUSTOM_LOCATION_CFG_KEY, customStoreFileName);
+                                        JOptionPane.showMessageDialog(getBurpFrame(), "DB file updated to use:\n\r" + customStoreFileName, title, JOptionPane.INFORMATION_MESSAGE);
+                                    } else {
+                                        JOptionPane.showMessageDialog(getBurpFrame(), "This feature is only available with SQLite storage.", title, JOptionPane.WARNING_MESSAGE);
+                                    }
                                 } else {
                                     JOptionPane.showMessageDialog(getBurpFrame(), "The following database file will continue to be used:\n\r" + customStoreFileName, title, JOptionPane.INFORMATION_MESSAGE);
                                 }
@@ -243,7 +318,7 @@ public class ConfigMenu implements Runnable {
                     public void actionPerformed(ActionEvent e) {
                         try {
                             //Get the data
-                            DBStats stats = ConfigMenu.this.activityLogger.getEventsStats();
+                            DBStats stats = ConfigMenu.this.activityStorage.getEventsStats();
                             //Build the message
                             String buffer = "Size of the database file on the disk: \n\r" + formatStat(stats.getSizeOnDisk()) + ".\n\r";
                             buffer += "Amount of data sent by the biggest HTTP request: \n\r" + formatStat(stats.getBiggestRequestSize()) + ".\n\r";

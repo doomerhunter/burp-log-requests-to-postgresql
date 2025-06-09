@@ -183,3 +183,99 @@ Procedure kindly provided by the PortSwigger support:
 # SQLite client
 
 Cross-platform: https://github.com/sqlitebrowser/sqlitebrowser
+
+# Burp Suite Activity Logger - PostgreSQL Database Setup
+
+This Docker Compose configuration sets up a PostgreSQL database for the Burp Suite Activity Logger extension.
+
+## Quick Start
+
+1. **Start the database:**
+   ```bash
+   docker-compose up -d
+   ```
+
+2. **Configure your Burp Suite extension with these connection parameters:**
+   - **Host:** `localhost`
+   - **Port:** `5432`
+   - **Database:** `burp_activity`
+   - **Username:** `burp_user`
+   - **Password:** `burp_password`
+
+3. **Stop the database:**
+   ```bash
+   docker-compose down
+   ```
+
+## Services Included
+
+### PostgreSQL Database
+- **Container:** `burp-activity-db`
+- **Port:** 5432 (exposed to host)
+- **Database:** `burp_activity`
+- **User:** `burp_user`
+- **Password:** `burp_password`
+
+### pgAdmin (Optional)
+- **Container:** `burp-pgadmin`
+- **Port:** 8080 (web interface)
+- **Email:** `admin@example.com`
+- **Password:** `admin`
+
+To start with pgAdmin included:
+```bash
+docker-compose --profile admin up -d
+```
+
+## Data Persistence
+
+Database data is stored in a Docker volume named `postgres_data`, so your data will persist between container restarts.
+
+## Database Schema
+
+The database automatically creates an `ACTIVITY` table with the following structure:
+- `id` - Primary key (auto-increment)
+- `local_source_ip` - Source IP address
+- `target_url` - Target URL of the request
+- `http_method` - HTTP method (GET, POST, etc.)
+- `burp_tool` - Burp Suite tool that generated the request
+- `request_raw` - Raw HTTP request
+- `send_datetime` - When the request was sent
+- `http_status_code` - HTTP response status code
+- `response_raw` - Raw HTTP response
+- `created_at` - When the record was created
+
+## Performance Optimizations
+
+The setup includes several performance optimizations:
+- Indexes on commonly queried columns
+- Proper user permissions
+- Health checks for container monitoring
+
+## Customization
+
+You can modify the following in `docker-compose.yml`:
+- Database name, username, and password in the `environment` section
+- Port mappings if you need different ports
+- Volume configurations for data storage
+
+## Troubleshooting
+
+1. **Connection refused errors:**
+   - Ensure the container is running: `docker-compose ps`
+   - Check container logs: `docker-compose logs postgres`
+
+2. **Permission errors:**
+   - The init script sets up proper permissions automatically
+   - If issues persist, check the logs: `docker-compose logs postgres`
+
+3. **Data not persisting:**
+   - Ensure the volume is properly created: `docker volume ls`
+   - Check that the container has write permissions
+
+## Security Notes
+
+- The default credentials are for development only
+- For production use, change the default passwords
+- Consider using Docker secrets for sensitive information
+- Restrict network access as needed
