@@ -148,7 +148,7 @@ public class BurpExtender implements BurpExtension {
             ActivityStorage activityStorage = ActivityStorageFactory.createStorage(preferences, customStoreFileName, this.api, trace);
             ActivityHttpListener activityHttpListener = new ActivityHttpListener(activityStorage, trace);
             //Setup the configuration menu
-            configMenu = new ConfigMenu(this.api, trace, activityStorage);
+            configMenu = new ConfigMenu(this.api, trace, activityStorage, activityHttpListener);
             SwingUtilities.invokeLater(configMenu);
             //Register all listeners
             this.api.http().registerHttpHandler(activityHttpListener);

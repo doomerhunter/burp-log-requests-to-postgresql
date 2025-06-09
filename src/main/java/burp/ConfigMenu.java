@@ -14,6 +14,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.ResourceBundle;
+import java.io.File;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.persistence.Preferences;
@@ -119,16 +120,23 @@ public class ConfigMenu implements Runnable {
     private ActivityStorage activityStorage;
 
     /**
+     * Ref on activity HTTP listener to enable storage replacement.
+     */
+    private ActivityHttpListener activityHttpListener;
+
+    /**
      * Constructor.
      *
      * @param api             The MontoyaAPI object used for accessing all the Burp features and ressources such as requests and responses.
      * @param trace           Ref on project logger.
      * @param activityStorage Ref on activity storage in order to enable the access to the DB statistics.
+     * @param activityHttpListener Ref on activity HTTP listener to enable storage replacement.
      */
-    ConfigMenu(MontoyaApi api, Trace trace, ActivityStorage activityStorage) {
+    ConfigMenu(MontoyaApi api, Trace trace, ActivityStorage activityStorage, ActivityHttpListener activityHttpListener) {
         this.api = api;
         this.trace = trace;
         this.activityStorage = activityStorage;
+        this.activityHttpListener = activityHttpListener;
         this.preferences = this.api.persistence().preferences();
 
         String value;
@@ -214,25 +222,86 @@ public class ConfigMenu implements Runnable {
                 if (subMenuUsePostgreSQL.isSelected()) {
                     // Show PostgreSQL configuration dialog
                     if (ActivityStorageFactory.showPostgreSQLConfigDialog(ConfigMenu.this.preferences, ConfigMenu.getBurpFrame())) {
-                        ConfigMenu.this.preferences.setBoolean(USE_POSTGRESQL_CFG_KEY, Boolean.TRUE);
-                        ConfigMenu.USE_POSTGRESQL = Boolean.TRUE;
-                        ConfigMenu.this.trace.writeLog("PostgreSQL storage enabled. Restart Burp to apply changes.");
-                        JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), 
-                            "PostgreSQL storage configured. Please restart Burp Suite to apply changes.", 
-                            "Configuration Updated", 
-                            JOptionPane.INFORMATION_MESSAGE);
+                        try {
+                            ConfigMenu.this.preferences.setBoolean(USE_POSTGRESQL_CFG_KEY, Boolean.TRUE);
+                            ConfigMenu.USE_POSTGRESQL = Boolean.TRUE;
+                            
+                            // Create new PostgreSQL storage
+                            String defaultStoreFileName = new File(System.getProperty("user.home"), "LogRequestsToSQLite.db").getAbsolutePath().replaceAll("\\\\", "/");
+                            String customStoreFileName = ConfigMenu.this.preferences.getString(ConfigMenu.DB_FILE_CUSTOM_LOCATION_CFG_KEY);
+                            if (customStoreFileName == null) {
+                                customStoreFileName = defaultStoreFileName;
+                            }
+                            
+                            ActivityStorage newStorage = ActivityStorageFactory.createStorage(
+                                ConfigMenu.this.preferences, 
+                                customStoreFileName, 
+                                ConfigMenu.this.api, 
+                                ConfigMenu.this.trace
+                            );
+                            
+                            // Replace storage without restart
+                            ConfigMenu.this.replaceActivityStorage(newStorage);
+                            
+                            ConfigMenu.this.trace.writeLog("PostgreSQL storage enabled and active.");
+                            JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), 
+                                "PostgreSQL storage is now active. No restart required!", 
+                                "Configuration Updated", 
+                                JOptionPane.INFORMATION_MESSAGE);
+                        } catch (Exception ex) {
+                            ConfigMenu.this.trace.writeLog("Failed to switch to PostgreSQL storage: " + ex.getMessage());
+                            JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), 
+                                "Failed to switch to PostgreSQL storage: " + ex.getMessage() + 
+                                "\nPlease check your PostgreSQL configuration and try again.", 
+                                "Configuration Error", 
+                                JOptionPane.ERROR_MESSAGE);
+                            // Revert checkbox state
+                            subMenuUsePostgreSQL.setSelected(false);
+                            ConfigMenu.this.preferences.setBoolean(USE_POSTGRESQL_CFG_KEY, Boolean.FALSE);
+                            ConfigMenu.USE_POSTGRESQL = Boolean.FALSE;
+                        }
                     } else {
                         // User cancelled, revert checkbox
                         subMenuUsePostgreSQL.setSelected(false);
                     }
                 } else {
-                    ConfigMenu.this.preferences.setBoolean(USE_POSTGRESQL_CFG_KEY, Boolean.FALSE);
-                    ConfigMenu.USE_POSTGRESQL = Boolean.FALSE;
-                    ConfigMenu.this.trace.writeLog("SQLite storage enabled. Restart Burp to apply changes.");
-                    JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), 
-                        "SQLite storage configured. Please restart Burp Suite to apply changes.", 
-                        "Configuration Updated", 
-                        JOptionPane.INFORMATION_MESSAGE);
+                    try {
+                        ConfigMenu.this.preferences.setBoolean(USE_POSTGRESQL_CFG_KEY, Boolean.FALSE);
+                        ConfigMenu.USE_POSTGRESQL = Boolean.FALSE;
+                        
+                        // Create new SQLite storage
+                        String defaultStoreFileName = new File(System.getProperty("user.home"), "LogRequestsToSQLite.db").getAbsolutePath().replaceAll("\\\\", "/");
+                        String customStoreFileName = ConfigMenu.this.preferences.getString(ConfigMenu.DB_FILE_CUSTOM_LOCATION_CFG_KEY);
+                        if (customStoreFileName == null) {
+                            customStoreFileName = defaultStoreFileName;
+                        }
+                        
+                        ActivityStorage newStorage = ActivityStorageFactory.createStorage(
+                            ConfigMenu.this.preferences, 
+                            customStoreFileName, 
+                            ConfigMenu.this.api, 
+                            ConfigMenu.this.trace
+                        );
+                        
+                        // Replace storage without restart
+                        ConfigMenu.this.replaceActivityStorage(newStorage);
+                        
+                        ConfigMenu.this.trace.writeLog("SQLite storage enabled and active.");
+                        JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), 
+                            "SQLite storage is now active. No restart required!", 
+                            "Configuration Updated", 
+                            JOptionPane.INFORMATION_MESSAGE);
+                    } catch (Exception ex) {
+                        ConfigMenu.this.trace.writeLog("Failed to switch to SQLite storage: " + ex.getMessage());
+                        JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), 
+                            "Failed to switch to SQLite storage: " + ex.getMessage(), 
+                            "Configuration Error", 
+                            JOptionPane.ERROR_MESSAGE);
+                        // Revert checkbox state
+                        subMenuUsePostgreSQL.setSelected(true);
+                        ConfigMenu.this.preferences.setBoolean(USE_POSTGRESQL_CFG_KEY, Boolean.TRUE);
+                        ConfigMenu.USE_POSTGRESQL = Boolean.TRUE;
+                    }
                 }
             }
         });
@@ -243,11 +312,45 @@ public class ConfigMenu implements Runnable {
         subMenuConfigurePostgreSQL.addActionListener(new AbstractAction(menuText) {
             public void actionPerformed(ActionEvent e) {
                 if (ActivityStorageFactory.showPostgreSQLConfigDialog(ConfigMenu.this.preferences, ConfigMenu.getBurpFrame())) {
-                    ConfigMenu.this.trace.writeLog("PostgreSQL connection parameters updated.");
-                    JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), 
-                        "PostgreSQL connection parameters updated. Restart Burp Suite to apply changes.", 
-                        "Configuration Updated", 
-                        JOptionPane.INFORMATION_MESSAGE);
+                    try {
+                        // If currently using PostgreSQL, update the connection
+                        if (ConfigMenu.USE_POSTGRESQL) {
+                            String defaultStoreFileName = new File(System.getProperty("user.home"), "LogRequestsToSQLite.db").getAbsolutePath().replaceAll("\\\\", "/");
+                            String customStoreFileName = ConfigMenu.this.preferences.getString(ConfigMenu.DB_FILE_CUSTOM_LOCATION_CFG_KEY);
+                            if (customStoreFileName == null) {
+                                customStoreFileName = defaultStoreFileName;
+                            }
+                            
+                            ActivityStorage newStorage = ActivityStorageFactory.createStorage(
+                                ConfigMenu.this.preferences, 
+                                customStoreFileName, 
+                                ConfigMenu.this.api, 
+                                ConfigMenu.this.trace
+                            );
+                            
+                            // Replace storage without restart
+                            ConfigMenu.this.replaceActivityStorage(newStorage);
+                            
+                            ConfigMenu.this.trace.writeLog("PostgreSQL connection parameters updated and reconnected.");
+                            JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), 
+                                "PostgreSQL connection updated and active. No restart required!", 
+                                "Configuration Updated", 
+                                JOptionPane.INFORMATION_MESSAGE);
+                        } else {
+                            ConfigMenu.this.trace.writeLog("PostgreSQL connection parameters updated.");
+                            JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), 
+                                "PostgreSQL connection parameters saved. Enable PostgreSQL storage to use the new settings.", 
+                                "Configuration Updated", 
+                                JOptionPane.INFORMATION_MESSAGE);
+                        }
+                    } catch (Exception ex) {
+                        ConfigMenu.this.trace.writeLog("Failed to update PostgreSQL connection: " + ex.getMessage());
+                        JOptionPane.showMessageDialog(ConfigMenu.getBurpFrame(), 
+                            "Failed to update PostgreSQL connection: " + ex.getMessage() + 
+                            "\nPlease check your PostgreSQL configuration and try again.", 
+                            "Configuration Error", 
+                            JOptionPane.ERROR_MESSAGE);
+                    }
                 }
             }
         });
@@ -381,5 +484,40 @@ public class ConfigMenu implements Runnable {
         //Computing
         double amount = stat / unit;
         return String.format("%.2f %s", amount, unitLabel);
+    }
+
+    /**
+     * Replace the current activity storage with a new one.
+     * This allows switching between storage types without restarting Burp Suite.
+     *
+     * @param newStorage The new storage instance to use
+     */
+    private void replaceActivityStorage(ActivityStorage newStorage) {
+        try {
+            // Pause logging temporarily
+            boolean wasLoggingPaused = IS_LOGGING_PAUSED;
+            IS_LOGGING_PAUSED = true;
+            
+            // Clean up old storage
+            if (this.activityStorage != null) {
+                this.activityStorage.extensionUnloaded();
+                this.trace.writeLog("Old activity storage cleaned up.");
+            }
+            
+            // Replace storage instances
+            this.activityStorage = newStorage;
+            this.activityHttpListener.replaceStorage(newStorage);
+            
+            // Register new storage as unloading handler
+            this.api.extension().registerUnloadingHandler(newStorage);
+            
+            // Restore logging state
+            IS_LOGGING_PAUSED = wasLoggingPaused;
+            
+            this.trace.writeLog("Activity storage successfully replaced.");
+        } catch (Exception e) {
+            this.trace.writeLog("Error replacing activity storage: " + e.getMessage());
+            throw new RuntimeException("Failed to replace activity storage", e);
+        }
     }
 }

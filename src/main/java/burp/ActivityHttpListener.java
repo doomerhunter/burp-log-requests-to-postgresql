@@ -31,6 +31,17 @@ class ActivityHttpListener implements HttpHandler {
         this.trace = trace;
     }
 
+    /**
+     * Replace the current activity storage with a new one.
+     * This allows switching between storage backends without restarting Burp Suite.
+     *
+     * @param newStorage The new storage instance to use
+     */
+    void replaceStorage(ActivityStorage newStorage) {
+        this.activityStorage = newStorage;
+        this.trace.writeLog("HTTP listener activity storage replaced.");
+    }
+
     @Override
     public RequestToBeSentAction handleHttpRequestToBeSent(HttpRequestToBeSent requestToBeSent)
     {
