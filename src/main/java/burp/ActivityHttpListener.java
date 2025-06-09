@@ -37,8 +37,9 @@ class ActivityHttpListener implements HttpHandler {
         //Check if the response will be logged as well. If yes, wait until response is received.
         if (!ConfigMenu.INCLUDE_HTTP_RESPONSE_CONTENT) {
             try {
-                if (this.mustLogRequest(requestToBeSent)) {
-                    this.activityLogger.logEvent(requestToBeSent, null, requestToBeSent.toolSource().toolType().toolName());
+                String toolName = requestToBeSent.toolSource().toolType().toolName();
+                if (this.mustLogRequest(requestToBeSent, toolName)) {
+                    this.activityLogger.logEvent(requestToBeSent, null, toolName);
                 }
             } catch (Exception e) {
                 this.trace.writeLog("Cannot save request: " + e.getMessage());
@@ -56,8 +57,9 @@ class ActivityHttpListener implements HttpHandler {
         if (ConfigMenu.INCLUDE_HTTP_RESPONSE_CONTENT) {
             try {
                 //Save the information of the current request if the message is an HTTP response and according to the restriction options
-                if (this.mustLogRequest(responseReceived.initiatingRequest())) {
-                    this.activityLogger.logEvent(responseReceived.initiatingRequest(), responseReceived, responseReceived.toolSource().toolType().toolName());
+                String toolName = responseReceived.toolSource().toolType().toolName();
+                if (this.mustLogRequest(responseReceived.initiatingRequest(), toolName)) {
+                    this.activityLogger.logEvent(responseReceived.initiatingRequest(), responseReceived, toolName);
                 }
             } catch (Exception e) {
                 this.trace.writeLog("Cannot save response: " + e.getMessage());
@@ -70,9 +72,10 @@ class ActivityHttpListener implements HttpHandler {
      * Determine if the current request must be logged according to the configuration options selected by the users.
      *
      * @param request HttpRequest object containing all the information about the request
+     * @param toolName Name of the tool that generated this request (e.g., "Repeater", "Intruder", "Proxy")
      * @return TRUE if the request must be logged, FALSE otherwise
      */
-    private boolean mustLogRequest(HttpRequest request) {
+    private boolean mustLogRequest(HttpRequest request, String toolName) {
         //By default: Request is logged
         boolean mustLogRequest = true;
 
@@ -80,8 +83,13 @@ class ActivityHttpListener implements HttpHandler {
         if (ConfigMenu.IS_LOGGING_PAUSED) {
             mustLogRequest = false;
         } else {
-            //First: We check if we must apply restriction about image resource
-            if (ConfigMenu.EXCLUDE_IMAGE_RESOURCE_REQUESTS) {
+            //First: We check if we must apply restriction about tool source
+            if (ConfigMenu.FILTER_BY_TOOL_SOURCE && ConfigMenu.EXCLUDED_TOOL_SOURCES.contains(toolName)) {
+                mustLogRequest = false;
+            }
+            //Second: We check if we must apply restriction about image resource
+            //Configuration restrictions options are applied in sequence so we only work here if the request is marked to be logged
+            if (mustLogRequest && ConfigMenu.EXCLUDE_IMAGE_RESOURCE_REQUESTS) {
                 //Get the file extension of the current URL and remove the parameters from the URL
                 String filename = request.url();
                 if (filename != null && filename.indexOf('?') != -1) {
@@ -97,7 +105,7 @@ class ActivityHttpListener implements HttpHandler {
                     }
                 }
             }
-            //Secondly: We check if we must apply restriction about the URL scope
+            //Finally: We check if we must apply restriction about the URL scope
             //Configuration restrictions options are applied in sequence so we only work here if the request is marked to be logged
             if (mustLogRequest && ConfigMenu.ONLY_INCLUDE_REQUESTS_FROM_SCOPE && ! request.isInScope()) {
                 mustLogRequest = false;
