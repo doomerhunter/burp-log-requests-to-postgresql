@@ -9,6 +9,10 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -17,6 +21,7 @@ import burp.api.montoya.extension.ExtensionUnloadingHandler;
 
 /**
  * Handle the recording of the activities into the real storage, SQLite local DB here.
+ * Now uses async writes with a background thread for improved performance.
  */
 class ActivityLogger implements ExtensionUnloadingHandler {
 
@@ -29,6 +34,21 @@ class ActivityLogger implements ExtensionUnloadingHandler {
     private static final String SQL_TOTAL_AMOUNT_DATA_SENT = "SELECT TOTAL(LENGTH(REQUEST_RAW)) FROM ACTIVITY";
     private static final String SQL_BIGGEST_REQUEST_AMOUNT_DATA_SENT = "SELECT MAX(LENGTH(REQUEST_RAW)) FROM ACTIVITY";
     private static final String SQL_MAX_HITS_BY_SECOND = "SELECT COUNT(REQUEST_RAW) AS HITS, SEND_DATETIME FROM ACTIVITY GROUP BY SEND_DATETIME ORDER BY HITS DESC";
+
+    /**
+     * Maximum queue size to prevent memory issues
+     */
+    private static final int MAX_QUEUE_SIZE = 10000;
+    
+    /**
+     * Batch size for database writes
+     */
+    private static final int BATCH_SIZE = 100;
+    
+    /**
+     * Maximum wait time for batch processing (milliseconds)
+     */
+    private static final long BATCH_TIMEOUT_MS = 1000;
 
     /**
      * Use a single DB connection for performance and to prevent DB file locking issue at filesystem level.
@@ -50,6 +70,20 @@ class ActivityLogger implements ExtensionUnloadingHandler {
      */
     private DateTimeFormatter datetimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
+    /**
+     * Queue for async event processing
+     */
+    private final BlockingQueue<LogEvent> eventQueue = new LinkedBlockingQueue<>(MAX_QUEUE_SIZE);
+    
+    /**
+     * Background thread for database writes
+     */
+    private Thread writerThread;
+    
+    /**
+     * Flag to control the writer thread lifecycle
+     */
+    private final AtomicBoolean running = new AtomicBoolean(true);
 
     /**
      * Constructor.
@@ -63,6 +97,163 @@ class ActivityLogger implements ExtensionUnloadingHandler {
         Class.forName("org.sqlite.JDBC");
         this.trace = trace;
         updateStoreLocation(storeName);
+        startWriterThread();
+    }
+
+    /**
+     * Start the background writer thread
+     */
+    private void startWriterThread() {
+        writerThread = new Thread(this::processEventQueue, "ActivityLogger-Writer");
+        writerThread.setDaemon(true);
+        writerThread.start();
+        this.trace.writeLog("Async writer thread started.");
+    }
+
+    /**
+     * Background thread that processes the event queue
+     */
+    private void processEventQueue() {
+        LogEvent[] batch = new LogEvent[BATCH_SIZE];
+        
+        while (running.get() || !eventQueue.isEmpty()) {
+            try {
+                int batchCount = 0;
+                long batchStartTime = System.currentTimeMillis();
+                
+                // Collect events for batching
+                while (batchCount < BATCH_SIZE && running.get()) {
+                    LogEvent event = eventQueue.poll(BATCH_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                    if (event == null) {
+                        break; // Timeout reached
+                    }
+                    batch[batchCount++] = event;
+                    
+                    // Check if we should flush early due to timeout
+                    if (System.currentTimeMillis() - batchStartTime >= BATCH_TIMEOUT_MS) {
+                        break;
+                    }
+                }
+                
+                // Process the batch if we have events
+                if (batchCount > 0) {
+                    writeBatch(batch, batchCount);
+                }
+                
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                this.trace.writeLog("Error in writer thread: " + e.getMessage());
+            }
+        }
+        
+        // Flush remaining events when shutting down
+        flushRemainingEvents();
+    }
+
+    /**
+     * Write a batch of events to the database
+     */
+    private void writeBatch(LogEvent[] batch, int count) throws Exception {
+        ensureDBState();
+        
+        // Use batch inserts for better performance
+        this.storageConnection.setAutoCommit(false);
+        
+        try (PreparedStatement stmt = this.storageConnection.prepareStatement(SQL_TABLE_INSERT)) {
+            for (int i = 0; i < count; i++) {
+                LogEvent event = batch[i];
+                stmt.setString(1, event.localSourceIp);
+                stmt.setString(2, event.targetUrl);
+                stmt.setString(3, event.httpMethod);
+                stmt.setString(4, event.tool);
+                stmt.setString(5, event.requestRaw);
+                stmt.setString(6, event.sendDateTime);
+                stmt.setString(7, event.httpStatusCode);
+                stmt.setString(8, event.responseRaw);
+                stmt.addBatch();
+            }
+            
+            int[] results = stmt.executeBatch();
+            this.storageConnection.commit();
+            
+            // Log any failed inserts
+            int successCount = 0;
+            for (int result : results) {
+                if (result > 0) successCount++;
+            }
+            
+            if (successCount != count) {
+                this.trace.writeLog("Batch insert: " + successCount + "/" + count + " events inserted successfully");
+            }
+            
+        } catch (Exception e) {
+            this.storageConnection.rollback();
+            throw e;
+        } finally {
+            this.storageConnection.setAutoCommit(true);
+        }
+    }
+
+    /**
+     * Flush any remaining events in the queue (used during shutdown)
+     */
+    private void flushRemainingEvents() {
+        LogEvent[] batch = new LogEvent[BATCH_SIZE];
+        int count = 0;
+        
+        while (!eventQueue.isEmpty() && count < BATCH_SIZE) {
+            LogEvent event = eventQueue.poll();
+            if (event != null) {
+                batch[count++] = event;
+            }
+        }
+        
+        if (count > 0) {
+            try {
+                writeBatch(batch, count);
+                this.trace.writeLog("Flushed " + count + " remaining events during shutdown.");
+            } catch (Exception e) {
+                this.trace.writeLog("Error flushing remaining events: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Save an activity event into the storage (now async).
+     *
+     * @param request       HttpRequest object containing all information about the request
+     *                      which was either sent or will be sent out soon.
+     * @param response      HttpResponse object containing all information about the response.
+     *                      Is null when only the request ist stored.
+     * @param tool          The name of the tool which was used to issue to request.
+     * @throws Exception    If event cannot be saved.
+     */
+    void logEvent(HttpRequest request, HttpResponse response, String tool) throws Exception {
+        try {
+            // Create event object with pre-computed values
+            LogEvent event = new LogEvent(
+                InetAddress.getLocalHost().getHostAddress(),
+                request.url(),
+                request.method(),
+                tool,
+                request.toString(),
+                LocalDateTime.now().format(this.datetimeFormatter),
+                response != null ? String.valueOf(response.statusCode()) : null,
+                response != null ? response.bodyToString() : null
+            );
+            
+            // Add to queue (non-blocking)
+            if (!eventQueue.offer(event)) {
+                // Queue is full - could log a warning or implement backpressure
+                this.trace.writeLog("Event queue full, dropping event. Consider adjusting MAX_QUEUE_SIZE.");
+            }
+            
+        } catch (Exception e) {
+            this.trace.writeLog("Error queueing event: " + e.getMessage());
+            // Could fallback to synchronous write in critical cases
+        }
     }
 
     /**
@@ -74,51 +265,13 @@ class ActivityLogger implements ExtensionUnloadingHandler {
     void updateStoreLocation(String storeName) throws Exception {
         String newUrl = "jdbc:sqlite:" + storeName;
         this.url = newUrl;
-        //Open the connection to the DB
         this.trace.writeLog("Activity information will be stored in database file '" + storeName + "'.");
         this.storageConnection = DriverManager.getConnection(newUrl);
         this.storageConnection.setAutoCommit(true);
         this.trace.writeLog("Open new connection to the storage.");
-        //Create the table
         try (Statement stmt = this.storageConnection.createStatement()) {
             stmt.execute(SQL_TABLE_CREATE);
             this.trace.writeLog("Recording table initialized.");
-        }
-    }
-
-    /**
-     * Save an activity event into the storage.
-     *
-     * @param request       HttpRequest object containing all information about the request
-     *                      which was either sent or will be sent out soon.
-     * @param response      HttpResponse object containing all information about the response.
-     *                      Is null when only the request ist stored.
-     * @param tool          The name of the tool which was used to issue to request.
-     * @throws Exception    If event cannot be saved.
-     */
-    void logEvent(HttpRequest request, HttpResponse response, String tool) throws Exception {
-        //Verify that the DB connection is still opened
-        this.ensureDBState();
-        //Insert the event into the storage
-        try (PreparedStatement stmt = this.storageConnection.prepareStatement(SQL_TABLE_INSERT)) {
-            stmt.setString(1, InetAddress.getLocalHost().getHostAddress());
-            stmt.setString(2, request.url());
-            stmt.setString(3, request.method());
-            stmt.setString(4, tool);
-            stmt.setString(5, request.toString()); //Apparently, bodyToString() does not work..
-            stmt.setString(6, LocalDateTime.now().format(this.datetimeFormatter));
-            //Make a distinction if only the request is stored or the response is added as well.
-            if (response != null) {
-                stmt.setString(7, String.valueOf(response.statusCode()));
-                stmt.setString(8, response.bodyToString());
-            } else {
-                stmt.setString(7, null);
-                stmt.setString(8, null);
-            }
-            int count = stmt.executeUpdate();
-            if (count != 1) {
-                this.trace.writeLog("Request was not inserted, no detail available (insertion counter = " + count + ") !");
-            }
         }
     }
 
@@ -189,6 +342,22 @@ class ActivityLogger implements ExtensionUnloadingHandler {
      */
     @Override
     public void extensionUnloaded() {
+        // Signal the writer thread to stop
+        running.set(false);
+        
+        // Wait for writer thread to finish processing
+        if (writerThread != null) {
+            try {
+                writerThread.interrupt();
+                writerThread.join(5000); // Wait up to 5 seconds
+                this.trace.writeLog("Writer thread stopped.");
+            } catch (InterruptedException e) {
+                this.trace.writeLog("Interrupted while waiting for writer thread to finish.");
+                Thread.currentThread().interrupt();
+            }
+        }
+        
+        // Close database connection
         try {
             if (this.storageConnection != null && !this.storageConnection.isClosed()) {
                 this.storageConnection.close();
@@ -196,6 +365,32 @@ class ActivityLogger implements ExtensionUnloadingHandler {
             }
         } catch (Exception e) {
             this.trace.writeLog("Cannot close the connection to the storage: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Value object to hold event data for async processing
+     */
+    private static class LogEvent {
+        final String localSourceIp;
+        final String targetUrl;
+        final String httpMethod;
+        final String tool;
+        final String requestRaw;
+        final String sendDateTime;
+        final String httpStatusCode;
+        final String responseRaw;
+
+        LogEvent(String localSourceIp, String targetUrl, String httpMethod, String tool,
+                String requestRaw, String sendDateTime, String httpStatusCode, String responseRaw) {
+            this.localSourceIp = localSourceIp;
+            this.targetUrl = targetUrl;
+            this.httpMethod = httpMethod;
+            this.tool = tool;
+            this.requestRaw = requestRaw;
+            this.sendDateTime = sendDateTime;
+            this.httpStatusCode = httpStatusCode;
+            this.responseRaw = responseRaw;
         }
     }
 }
