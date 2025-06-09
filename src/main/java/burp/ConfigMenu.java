@@ -50,6 +50,16 @@ public class ConfigMenu implements Runnable {
     static volatile boolean IS_LOGGING_PAUSED = Boolean.FALSE;
 
     /**
+     * Expose the configuration option for filtering requests by tool source.
+     */
+    static volatile boolean FILTER_BY_TOOL_SOURCE = Boolean.FALSE;
+
+    /**
+     * Expose the list of excluded tools when tool source filtering is enabled.
+     */
+    static final List<String> EXCLUDED_TOOL_SOURCES = new ArrayList<>();
+
+    /**
      * Option configuration key for the restriction of the logging of requests in defined target scope.
      */
     private static final String ONLY_INCLUDE_REQUESTS_FROM_SCOPE_CFG_KEY = "ONLY_INCLUDE_REQUESTS_FROM_SCOPE";
@@ -73,6 +83,16 @@ public class ConfigMenu implements Runnable {
      * Option configuration key for the logging of the HTTP response content.
      */
     public static final String INCLUDE_HTTP_RESPONSE_CONTENT_CFG_KEY = "INCLUDE_HTTP_RESPONSE_CONTENT";
+
+    /**
+     * Option configuration key for filtering requests by tool source.
+     */
+    public static final String FILTER_BY_TOOL_SOURCE_CFG_KEY = "FILTER_BY_TOOL_SOURCE";
+
+    /**
+     * Option configuration key for storing excluded tool sources.
+     */
+    public static final String EXCLUDED_TOOL_SOURCES_CFG_KEY = "EXCLUDED_TOOL_SOURCES";
 
     /**
      * Extension root configuration menu.
@@ -126,6 +146,19 @@ public class ConfigMenu implements Runnable {
         EXCLUDE_IMAGE_RESOURCE_REQUESTS = Boolean.TRUE.equals(this.preferences.getBoolean(EXCLUDE_IMAGE_RESOURCE_REQUESTS_CFG_KEY));
         IS_LOGGING_PAUSED = Boolean.TRUE.equals(this.preferences.getBoolean(PAUSE_LOGGING_CFG_KEY));
         INCLUDE_HTTP_RESPONSE_CONTENT = Boolean.TRUE.equals(this.preferences.getBoolean(INCLUDE_HTTP_RESPONSE_CONTENT_CFG_KEY));
+        FILTER_BY_TOOL_SOURCE = Boolean.TRUE.equals(this.preferences.getBoolean(FILTER_BY_TOOL_SOURCE_CFG_KEY));
+        
+        // Load excluded tool sources from preferences
+        String excludedToolsStr = this.preferences.getString(EXCLUDED_TOOL_SOURCES_CFG_KEY);
+        if (excludedToolsStr != null && !excludedToolsStr.trim().isEmpty()) {
+            String[] excludedTools = excludedToolsStr.split(",");
+            for (String tool : excludedTools) {
+                String trimmedTool = tool.trim();
+                if (!trimmedTool.isEmpty()) {
+                    EXCLUDED_TOOL_SOURCES.add(trimmedTool);
+                }
+            }
+        }
     }
 
     /**
@@ -205,6 +238,55 @@ public class ConfigMenu implements Runnable {
             }
         });
         this.cfgMenu.add(subMenuPauseTheLogging);
+        //Add the menu to filter by tool source
+        menuText = "Filter by tool source (exclude Repeater, Intruder, etc.)";
+        final JCheckBoxMenuItem subMenuFilterByToolSource = new JCheckBoxMenuItem(menuText, FILTER_BY_TOOL_SOURCE);
+        subMenuFilterByToolSource.addActionListener(new AbstractAction(menuText) {
+            public void actionPerformed(ActionEvent e) {
+                if (subMenuFilterByToolSource.isSelected()) {
+                    // Show dialog to select which tools to exclude
+                    String defaultExcluded = "Repeater,Intruder";
+                    String currentExcluded = String.join(",", EXCLUDED_TOOL_SOURCES);
+                    String input = JOptionPane.showInputDialog(
+                        getBurpFrame(),
+                        "Enter comma-separated list of tools to exclude from logging:\n(e.g., Repeater,Intruder,Spider)",
+                        "Tool Filter Configuration",
+                        JOptionPane.QUESTION_MESSAGE
+                    );
+                    
+                    if (input != null) {
+                        // Clear existing excluded tools
+                        EXCLUDED_TOOL_SOURCES.clear();
+                        
+                        // Parse and add new excluded tools
+                        if (!input.trim().isEmpty()) {
+                            String[] tools = input.split(",");
+                            for (String tool : tools) {
+                                String trimmedTool = tool.trim();
+                                if (!trimmedTool.isEmpty()) {
+                                    EXCLUDED_TOOL_SOURCES.add(trimmedTool);
+                                }
+                            }
+                        }
+                        
+                        // Save preferences
+                        ConfigMenu.this.preferences.setBoolean(FILTER_BY_TOOL_SOURCE_CFG_KEY, Boolean.TRUE);
+                        ConfigMenu.this.preferences.setString(EXCLUDED_TOOL_SOURCES_CFG_KEY, String.join(",", EXCLUDED_TOOL_SOURCES));
+                        FILTER_BY_TOOL_SOURCE = Boolean.TRUE;
+                        
+                        ConfigMenu.this.trace.writeLog("Tool source filtering enabled. Excluded tools: " + EXCLUDED_TOOL_SOURCES.toString());
+                    } else {
+                        // User cancelled, uncheck the menu item
+                        subMenuFilterByToolSource.setSelected(false);
+                    }
+                } else {
+                    ConfigMenu.this.preferences.setBoolean(FILTER_BY_TOOL_SOURCE_CFG_KEY, Boolean.FALSE);
+                    FILTER_BY_TOOL_SOURCE = Boolean.FALSE;
+                    ConfigMenu.this.trace.writeLog("Tool source filtering disabled. All tools will be logged.");
+                }
+            }
+        });
+        this.cfgMenu.add(subMenuFilterByToolSource);
         //Add the menu to change the DB file
         menuText = "Change the DB file";
         final JMenuItem subMenuDBFileLocationMenuItem = new JMenuItem(menuText);
