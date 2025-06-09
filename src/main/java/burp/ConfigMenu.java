@@ -7,6 +7,9 @@ import javax.swing.JFrame;
 import javax.swing.JMenu;
 import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JLabel;
+import javax.swing.JCheckBox;
 import java.awt.Frame;
 import java.awt.event.ActionEvent;
 import java.util.ArrayList;
@@ -14,6 +17,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.ResourceBundle;
+import java.awt.GridLayout;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.persistence.Preferences;
@@ -55,9 +59,9 @@ public class ConfigMenu implements Runnable {
     static volatile boolean FILTER_BY_TOOL_SOURCE = Boolean.FALSE;
 
     /**
-     * Expose the list of excluded tools when tool source filtering is enabled.
+     * Expose the list of included tools when tool source filtering is enabled.
      */
-    static final List<String> EXCLUDED_TOOL_SOURCES = new ArrayList<>();
+    static final List<String> INCLUDED_TOOL_SOURCES = new ArrayList<>();
 
     /**
      * Option configuration key for the restriction of the logging of requests in defined target scope.
@@ -90,9 +94,9 @@ public class ConfigMenu implements Runnable {
     public static final String FILTER_BY_TOOL_SOURCE_CFG_KEY = "FILTER_BY_TOOL_SOURCE";
 
     /**
-     * Option configuration key for storing excluded tool sources.
+     * Option configuration key for storing included tool sources.
      */
-    public static final String EXCLUDED_TOOL_SOURCES_CFG_KEY = "EXCLUDED_TOOL_SOURCES";
+    public static final String INCLUDED_TOOL_SOURCES_CFG_KEY = "INCLUDED_TOOL_SOURCES";
 
     /**
      * Extension root configuration menu.
@@ -148,16 +152,19 @@ public class ConfigMenu implements Runnable {
         INCLUDE_HTTP_RESPONSE_CONTENT = Boolean.TRUE.equals(this.preferences.getBoolean(INCLUDE_HTTP_RESPONSE_CONTENT_CFG_KEY));
         FILTER_BY_TOOL_SOURCE = Boolean.TRUE.equals(this.preferences.getBoolean(FILTER_BY_TOOL_SOURCE_CFG_KEY));
         
-        // Load excluded tool sources from preferences
-        String excludedToolsStr = this.preferences.getString(EXCLUDED_TOOL_SOURCES_CFG_KEY);
-        if (excludedToolsStr != null && !excludedToolsStr.trim().isEmpty()) {
-            String[] excludedTools = excludedToolsStr.split(",");
-            for (String tool : excludedTools) {
+        // Load included tool sources from preferences
+        String includedToolsStr = this.preferences.getString(INCLUDED_TOOL_SOURCES_CFG_KEY);
+        if (includedToolsStr != null && !includedToolsStr.trim().isEmpty()) {
+            String[] includedTools = includedToolsStr.split(",");
+            for (String tool : includedTools) {
                 String trimmedTool = tool.trim();
                 if (!trimmedTool.isEmpty()) {
-                    EXCLUDED_TOOL_SOURCES.add(trimmedTool);
+                    INCLUDED_TOOL_SOURCES.add(trimmedTool);
                 }
             }
+        } else {
+            // Default: include all tools if no preference is set
+            Collections.addAll(INCLUDED_TOOL_SOURCES, "Spider", "Intruder", "Scanner", "Repeater", "Sequencer", "Proxy", "Target", "Extender");
         }
     }
 
@@ -239,42 +246,18 @@ public class ConfigMenu implements Runnable {
         });
         this.cfgMenu.add(subMenuPauseTheLogging);
         //Add the menu to filter by tool source
-        menuText = "Filter by tool source (exclude Repeater, Intruder, etc.)";
+        menuText = "Select tools to log";
         final JCheckBoxMenuItem subMenuFilterByToolSource = new JCheckBoxMenuItem(menuText, FILTER_BY_TOOL_SOURCE);
         subMenuFilterByToolSource.addActionListener(new AbstractAction(menuText) {
             public void actionPerformed(ActionEvent e) {
                 if (subMenuFilterByToolSource.isSelected()) {
-                    // Show dialog to select which tools to exclude
-                    String defaultExcluded = "Repeater,Intruder";
-                    String currentExcluded = String.join(",", EXCLUDED_TOOL_SOURCES);
-                    String input = JOptionPane.showInputDialog(
-                        getBurpFrame(),
-                        "Enter comma-separated list of tools to exclude from logging:\n(e.g., Repeater,Intruder,Spider)",
-                        "Tool Filter Configuration",
-                        JOptionPane.QUESTION_MESSAGE
-                    );
-                    
-                    if (input != null) {
-                        // Clear existing excluded tools
-                        EXCLUDED_TOOL_SOURCES.clear();
-                        
-                        // Parse and add new excluded tools
-                        if (!input.trim().isEmpty()) {
-                            String[] tools = input.split(",");
-                            for (String tool : tools) {
-                                String trimmedTool = tool.trim();
-                                if (!trimmedTool.isEmpty()) {
-                                    EXCLUDED_TOOL_SOURCES.add(trimmedTool);
-                                }
-                            }
-                        }
-                        
-                        // Save preferences
+                    // Show dialog with checkboxes for each tool
+                    if (showToolSelectionDialog()) {
                         ConfigMenu.this.preferences.setBoolean(FILTER_BY_TOOL_SOURCE_CFG_KEY, Boolean.TRUE);
-                        ConfigMenu.this.preferences.setString(EXCLUDED_TOOL_SOURCES_CFG_KEY, String.join(",", EXCLUDED_TOOL_SOURCES));
+                        ConfigMenu.this.preferences.setString(INCLUDED_TOOL_SOURCES_CFG_KEY, String.join(",", INCLUDED_TOOL_SOURCES));
                         FILTER_BY_TOOL_SOURCE = Boolean.TRUE;
                         
-                        ConfigMenu.this.trace.writeLog("Tool source filtering enabled. Excluded tools: " + EXCLUDED_TOOL_SOURCES.toString());
+                        ConfigMenu.this.trace.writeLog("Tool source filtering enabled. Included tools: " + INCLUDED_TOOL_SOURCES.toString());
                     } else {
                         // User cancelled, uncheck the menu item
                         subMenuFilterByToolSource.setSelected(false);
@@ -282,6 +265,9 @@ public class ConfigMenu implements Runnable {
                 } else {
                     ConfigMenu.this.preferences.setBoolean(FILTER_BY_TOOL_SOURCE_CFG_KEY, Boolean.FALSE);
                     FILTER_BY_TOOL_SOURCE = Boolean.FALSE;
+                    // Reset to include all tools
+                    INCLUDED_TOOL_SOURCES.clear();
+                    Collections.addAll(INCLUDED_TOOL_SOURCES, "Spider", "Intruder", "Scanner", "Repeater", "Sequencer", "Proxy", "Target", "Extender");
                     ConfigMenu.this.trace.writeLog("Tool source filtering disabled. All tools will be logged.");
                 }
             }
@@ -388,5 +374,52 @@ public class ConfigMenu implements Runnable {
         //Computing
         double amount = stat / unit;
         return String.format("%.2f %s", amount, unitLabel);
+    }
+
+    /**
+     * Show a dialog with checkboxes for tool selection.
+     *
+     * @return true if user confirmed the selection, false if cancelled
+     */
+    private boolean showToolSelectionDialog() {
+        String[] allTools = {"Spider", "Intruder", "Scanner", "Repeater", "Sequencer", "Proxy", "Target", "Extender"};
+        JCheckBox[] checkBoxes = new JCheckBox[allTools.length];
+        
+        // Create checkboxes and set their initial state based on current included tools
+        for (int i = 0; i < allTools.length; i++) {
+            checkBoxes[i] = new JCheckBox(allTools[i], INCLUDED_TOOL_SOURCES.contains(allTools[i]));
+        }
+        
+        // Create a panel to hold the checkboxes
+        JPanel panel = new JPanel();
+        panel.setLayout(new GridLayout(0, 2)); // 2 columns
+        panel.add(new JLabel("Select tools to log:"));
+        panel.add(new JLabel("")); // Empty cell for spacing
+        
+        for (JCheckBox checkBox : checkBoxes) {
+            panel.add(checkBox);
+        }
+        
+        // Show the dialog
+        int result = JOptionPane.showConfirmDialog(
+            getBurpFrame(),
+            panel,
+            "Tool Selection",
+            JOptionPane.OK_CANCEL_OPTION,
+            JOptionPane.PLAIN_MESSAGE
+        );
+        
+        if (result == JOptionPane.OK_OPTION) {
+            // Update the included tools list based on checkbox selections
+            INCLUDED_TOOL_SOURCES.clear();
+            for (int i = 0; i < checkBoxes.length; i++) {
+                if (checkBoxes[i].isSelected()) {
+                    INCLUDED_TOOL_SOURCES.add(allTools[i]);
+                }
+            }
+            return true;
+        }
+        
+        return false;
     }
 }
