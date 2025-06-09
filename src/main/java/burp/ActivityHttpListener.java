@@ -84,7 +84,7 @@ class ActivityHttpListener implements HttpHandler {
             mustLogRequest = false;
         } else {
             //First: We check if we must apply restriction about tool source
-            if (ConfigMenu.FILTER_BY_TOOL_SOURCE && ConfigMenu.EXCLUDED_TOOL_SOURCES.contains(toolName)) {
+            if (ConfigMenu.FILTER_BY_TOOL_SOURCE && !ConfigMenu.INCLUDED_TOOL_SOURCES.contains(toolName)) {
                 mustLogRequest = false;
             }
             //Second: We check if we must apply restriction about image resource
