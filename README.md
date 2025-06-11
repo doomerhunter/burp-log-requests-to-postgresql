@@ -16,6 +16,7 @@ OG Readme below - to be updated
 
 > [!NOTE]
 > This extension was mainly developed by [righettod](https://github.com/righettod). Thank you very much!
+> Then the extension was maintained and ported to Montoya here : [https://github.com/Redguard/log-requests-to-sqlite](https://github.com/Redguard/log-requests-to-sqlite)
 
 <!-- [![NightBuild](https://github.com/righettod/log-requests-to-sqlite/workflows/NightBuild/badge.svg)](https://github.com/righettod/log-requests-to-sqlite/actions)
 [![Known Vulnerabilities](https://snyk.io/test/github/righettod/log-requests-to-sqlite/badge.svg?targetFile=build.gradle)](https://snyk.io/test/github/righettod/log-requests-to-sqlite?targetFile=build.gradle) -->
