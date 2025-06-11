@@ -2,12 +2,17 @@ Fork of https://github.com/Redguard/log-requests-to-sqlite
 
 New features :
 - Asynchronous handling of database writes + batch handling of requests/responses
-- Added a PostgreSQL connector
+- Replaced the original SQLite connector by a PostgreSQL connector
 - Added the ability to filter out by tool (repeater, intruder, proxy...)
+- Adding some new columns (response headers, response lenght...)
 
-PRs have been pushed to the main repo
+PRs have been pushed to the main repo on part of the features. However I plan to keep developping this fork independently for "heavy" modifications that might not follow the philosophy of the OG extension
 
+
+OG Readme below - to be updated
 =======
+
+
 
 > [!NOTE]
 > This extension was mainly developed by [righettod](https://github.com/righettod). Thank you very much!
