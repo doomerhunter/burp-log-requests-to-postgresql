@@ -14,6 +14,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.Arrays;
+import java.util.Base64;
+import java.nio.charset.StandardCharsets;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -52,6 +55,10 @@ class PostgreSQLActivityLogger implements ActivityStorage {
             "response_content_type TEXT, " +
             "http_version TEXT, " +
             "response_time_ms INTEGER, " +
+            "request_raw_is_base64 BOOLEAN DEFAULT FALSE, " +
+            "request_body_is_base64 BOOLEAN DEFAULT FALSE, " +
+            "response_raw_is_base64 BOOLEAN DEFAULT FALSE, " +
+            "response_body_is_base64 BOOLEAN DEFAULT FALSE, " +
             "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)";
 
     private static final String SQL_TABLE_INSERT = "INSERT INTO ACTIVITY " +
@@ -59,8 +66,9 @@ class PostgreSQLActivityLogger implements ActivityStorage {
             "request_raw, request_headers, request_body, request_size, request_content_type, " +
             "response_raw, response_headers, response_body, response_size, " +
             "http_status_code, http_reason_phrase, response_mime_type, response_content_type, " +
-            "http_version, response_time_ms) " +
-            "VALUES(?,?,?,?,?::timestamp,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+            "http_version, response_time_ms, request_raw_is_base64, request_body_is_base64, " +
+            "response_raw_is_base64, response_body_is_base64) " +
+            "VALUES(?,?,?,?,?::timestamp,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
     private static final String SQL_COUNT_RECORDS = "SELECT COUNT(http_method) FROM ACTIVITY";
     private static final String SQL_TOTAL_AMOUNT_DATA_SENT = "SELECT SUM(request_size) FROM ACTIVITY WHERE request_size IS NOT NULL";
@@ -122,6 +130,133 @@ class PostgreSQLActivityLogger implements ActivityStorage {
      * Flag to control the writer thread lifecycle
      */
     private final AtomicBoolean running = new AtomicBoolean(true);
+
+    /**
+     * UTF-8 validation and PostgreSQL safety utility methods
+     */
+    
+    /**
+     * Check if byte array contains valid UTF-8 sequences
+     */
+    private static boolean isValidUTF8(byte[] bytes) {
+        int i = 0;
+        while (i < bytes.length) {
+            byte b = bytes[i];
+            
+            // ASCII (0xxxxxxx) - always valid
+            if ((b & 0x80) == 0) {
+                i++;
+                continue;
+            }
+            
+            // Multi-byte sequences
+            int expectedBytes;
+            if ((b & 0xE0) == 0xC0) expectedBytes = 2;      // 110xxxxx
+            else if ((b & 0xF0) == 0xE0) expectedBytes = 3; // 1110xxxx  
+            else if ((b & 0xF8) == 0xF0) expectedBytes = 4; // 11110xxx
+            else return false; // Invalid start byte
+            
+            // Check we have enough bytes
+            if (i + expectedBytes > bytes.length) return false;
+            
+            // Check continuation bytes (10xxxxxx)
+            for (int j = 1; j < expectedBytes; j++) {
+                if ((bytes[i + j] & 0xC0) != 0x80) return false;
+            }
+            
+            i += expectedBytes;
+        }
+        return true;
+    }
+    
+    /**
+     * Check if string contains null bytes (PostgreSQL TEXT incompatible)
+     */
+    private static boolean containsNullBytes(String data) {
+        return data != null && data.indexOf('\0') != -1;
+    }
+    
+    /**
+     * Check if byte array is safe for PostgreSQL TEXT columns
+     */
+    private static boolean isSafeForPostgreSQL(byte[] data) {
+        if (data == null) return true;
+        
+        // Quick null byte check first (fastest rejection)
+        for (byte b : data) {
+            if (b == 0) return false;
+        }
+        
+        // UTF-8 validation
+        return isValidUTF8(data);
+    }
+    
+    /**
+     * Check if string is safe for PostgreSQL TEXT columns
+     */
+    private static boolean isSafeForPostgreSQL(String data) {
+        if (data == null) return true;
+        
+        return !containsNullBytes(data) && 
+               StandardCharsets.UTF_8.newEncoder().canEncode(data);
+    }
+    
+    /**
+     * Safe content wrapper with encoding information
+     */
+    private static class SafeContent {
+        final String content;
+        final boolean isBase64Encoded;
+        
+        SafeContent(String content, boolean isBase64Encoded) {
+            this.content = content;
+            this.isBase64Encoded = isBase64Encoded;
+        }
+    }
+    
+    /**
+     * Make content safe for PostgreSQL by encoding binary data as Base64
+     */
+    private static SafeContent makeSafeForPostgreSQL(String data) {
+        if (data == null) {
+            return new SafeContent(null, false);
+        }
+        
+        if (isSafeForPostgreSQL(data)) {
+            return new SafeContent(data, false);
+        }
+        
+        // Convert to Base64 for binary content
+        try {
+            byte[] bytes = data.getBytes(StandardCharsets.ISO_8859_1); // Preserve original bytes
+            String base64Content = Base64.getEncoder().encodeToString(bytes);
+            return new SafeContent(base64Content, true);
+        } catch (Exception e) {
+            // Fallback: sanitize by removing null bytes
+            String sanitized = data.replace('\0', '?');
+            return new SafeContent(sanitized, false);
+        }
+    }
+    
+    /**
+     * Decode Base64 content back to original form
+     * @param content The potentially Base64-encoded content
+     * @param isBase64 Whether the content is Base64 encoded
+     * @return The decoded content
+     */
+    public static String decodeContent(String content, boolean isBase64) {
+        if (content == null || !isBase64) {
+            return content;
+        }
+        
+        try {
+            byte[] decoded = Base64.getDecoder().decode(content);
+            return new String(decoded, StandardCharsets.ISO_8859_1);
+        } catch (Exception e) {
+            // If decoding fails, return the original content
+            return content;
+        }
+    }
 
     /**
      * Constructor.
@@ -257,6 +392,10 @@ class PostgreSQLActivityLogger implements ActivityStorage {
                 stmt.setString(18, event.responseContentType);
                 stmt.setString(19, event.httpVersion);
                 stmt.setObject(20, event.responseTimeMs);
+                stmt.setBoolean(21, event.requestRawIsBase64);
+                stmt.setBoolean(22, event.requestBodyIsBase64);
+                stmt.setBoolean(23, event.responseRawIsBase64);
+                stmt.setBoolean(24, event.responseBodyIsBase64);
                 stmt.addBatch();
             }
             
@@ -323,16 +462,17 @@ class PostgreSQLActivityLogger implements ActivityStorage {
                 responseTimeMs = System.currentTimeMillis() - requestStartTime;
             }
 
-            // Extract request details
+            // Extract request details with safety checks
             String requestHeaders = extractHeaders(request.headers());
-            String requestBody = request.body() != null ? request.bodyToString() : null;
+            SafeContent safeRequestRaw = makeSafeForPostgreSQL(request.toString());
+            SafeContent safeRequestBody = makeSafeForPostgreSQL(request.body() != null ? request.bodyToString() : null);
             Integer requestSize = request.toByteArray() != null ? request.toByteArray().length() : null;
             String requestContentType = request.headerValue("Content-Type");
 
-            // Extract response details
-            String responseRaw = null;
+            // Extract response details with safety checks
             String responseHeaders = null;
-            String responseBody = null;
+            SafeContent safeResponseRaw = new SafeContent(null, false);
+            SafeContent safeResponseBody = new SafeContent(null, false);
             Integer responseSize = null;
             Integer httpStatusCode = null;
             String httpReasonPhrase = null;
@@ -340,9 +480,9 @@ class PostgreSQLActivityLogger implements ActivityStorage {
             String responseContentType = null;
 
             if (response != null) {
-                responseRaw = response.toString();
+                safeResponseRaw = makeSafeForPostgreSQL(response.toString());
                 responseHeaders = extractHeaders(response.headers());
-                responseBody = response.bodyToString();
+                safeResponseBody = makeSafeForPostgreSQL(response.bodyToString());
                 responseSize = response.toByteArray() != null ? response.toByteArray().length() : null;
                 httpStatusCode = (int) response.statusCode();
                 httpReasonPhrase = response.reasonPhrase();
@@ -359,22 +499,37 @@ class PostgreSQLActivityLogger implements ActivityStorage {
                 request.method(),
                 tool,
                 LocalDateTime.now().format(this.datetimeFormatter),
-                request.toString(),
+                safeRequestRaw.content,
                 requestHeaders,
-                requestBody,
+                safeRequestBody.content,
                 requestSize,
                 requestContentType,
-                responseRaw,
+                safeResponseRaw.content,
                 responseHeaders,
-                responseBody,
+                safeResponseBody.content,
                 responseSize,
                 httpStatusCode,
                 httpReasonPhrase,
                 responseMimeType,
                 responseContentType,
                 request.httpVersion(),
-                responseTimeMs
+                responseTimeMs,
+                safeRequestRaw.isBase64Encoded,
+                safeRequestBody.isBase64Encoded,
+                safeResponseRaw.isBase64Encoded,
+                safeResponseBody.isBase64Encoded
             );
+            
+            // Log if any content was Base64 encoded
+            if (safeRequestRaw.isBase64Encoded || safeRequestBody.isBase64Encoded || 
+                safeResponseRaw.isBase64Encoded || safeResponseBody.isBase64Encoded) {
+                this.trace.writeLog("PostgreSQL: Binary content detected and Base64 encoded for " + 
+                                  request.method() + " " + request.url() + 
+                                  " (req_raw=" + safeRequestRaw.isBase64Encoded + 
+                                  ", req_body=" + safeRequestBody.isBase64Encoded + 
+                                  ", resp_raw=" + safeResponseRaw.isBase64Encoded + 
+                                  ", resp_body=" + safeResponseBody.isBase64Encoded + ")");
+            }
             
             // Add to queue (non-blocking)
             if (!eventQueue.offer(event)) {
@@ -569,12 +724,18 @@ class PostgreSQLActivityLogger implements ActivityStorage {
         final String responseContentType;
         final String httpVersion;
         final Long responseTimeMs;
+        final boolean requestRawIsBase64;
+        final boolean requestBodyIsBase64;
+        final boolean responseRawIsBase64;
+        final boolean responseBodyIsBase64;
 
         EnhancedLogEvent(String localSourceIp, String targetUrl, String httpMethod, String tool,
                 String sendDateTime, String requestRaw, String requestHeaders, String requestBody,
                 Integer requestSize, String requestContentType, String responseRaw, String responseHeaders,
                 String responseBody, Integer responseSize, Integer httpStatusCode, String httpReasonPhrase,
-                String responseMimeType, String responseContentType, String httpVersion, Long responseTimeMs) {
+                String responseMimeType, String responseContentType, String httpVersion, Long responseTimeMs,
+                boolean requestRawIsBase64, boolean requestBodyIsBase64, boolean responseRawIsBase64, 
+                boolean responseBodyIsBase64) {
             this.localSourceIp = localSourceIp;
             this.targetUrl = targetUrl;
             this.httpMethod = httpMethod;
@@ -595,6 +756,10 @@ class PostgreSQLActivityLogger implements ActivityStorage {
             this.responseContentType = responseContentType;
             this.httpVersion = httpVersion;
             this.responseTimeMs = responseTimeMs;
+            this.requestRawIsBase64 = requestRawIsBase64;
+            this.requestBodyIsBase64 = requestBodyIsBase64;
+            this.responseRawIsBase64 = responseRawIsBase64;
+            this.responseBodyIsBase64 = responseBodyIsBase64;
         }
     }
 } 
