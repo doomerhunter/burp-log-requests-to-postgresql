@@ -41,7 +41,7 @@ public class ConfigMenu implements Runnable {
     /**
      * Expose the configuration option for the logging of the HTTP response content.
      */
-    static volatile boolean INCLUDE_HTTP_RESPONSE_CONTENT = Boolean.FALSE;
+    static volatile boolean INCLUDE_HTTP_RESPONSE_CONTENT = Boolean.TRUE;
 
     /**
      * Expose the list of all possible extensions of image resource to work in combination with the option "EXCLUDE_IMAGE_RESOURCE_REQUESTS".
