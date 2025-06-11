@@ -11,10 +11,26 @@ CREATE TABLE IF NOT EXISTS ACTIVITY (
     target_url TEXT,
     http_method TEXT,
     burp_tool TEXT,
-    request_raw TEXT,
     send_datetime TIMESTAMP,
-    http_status_code TEXT,
+    request_raw TEXT,
+    request_headers TEXT,
+    request_body TEXT,
+    request_size INTEGER,
+    request_content_type TEXT,
     response_raw TEXT,
+    response_headers TEXT,
+    response_body TEXT,
+    response_size INTEGER,
+    http_status_code INTEGER,
+    http_reason_phrase TEXT,
+    response_mime_type TEXT,
+    response_content_type TEXT,
+    http_version TEXT,
+    response_time_ms INTEGER,
+    request_raw_is_base64 BOOLEAN DEFAULT FALSE,
+    request_body_is_base64 BOOLEAN DEFAULT FALSE,
+    response_raw_is_base64 BOOLEAN DEFAULT FALSE,
+    response_body_is_base64 BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -27,6 +43,8 @@ CREATE INDEX IF NOT EXISTS idx_activity_send_datetime ON ACTIVITY(send_datetime)
 CREATE INDEX IF NOT EXISTS idx_activity_http_method ON ACTIVITY(http_method);
 CREATE INDEX IF NOT EXISTS idx_activity_burp_tool ON ACTIVITY(burp_tool);
 CREATE INDEX IF NOT EXISTS idx_activity_target_url ON ACTIVITY(target_url);
+CREATE INDEX IF NOT EXISTS idx_activity_http_status_code ON ACTIVITY(http_status_code);
+CREATE INDEX IF NOT EXISTS idx_activity_response_mime_type ON ACTIVITY(response_mime_type);
 
 -- Log initialization completion
 DO $$
