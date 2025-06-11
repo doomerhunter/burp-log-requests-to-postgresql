@@ -11,35 +11,21 @@ import javax.swing.JLabel;
 import java.awt.GridLayout;
 
 /**
- * Factory class to create the appropriate activity storage instance based on configuration.
+ * Factory class to create PostgreSQL activity storage instances.
  */
 class ActivityStorageFactory {
 
     /**
-     * Create an activity storage instance based on configuration preferences.
+     * Create a PostgreSQL activity storage instance.
      *
      * @param preferences   Preferences for configuration
-     * @param storeName     SQLite database file path (used if SQLite is selected)
      * @param api           MontoyaApi instance
      * @param trace         Trace logger
      * @return              ActivityStorage instance
      * @throws Exception    If storage creation fails
      */
-    static ActivityStorage createStorage(Preferences preferences, String storeName, MontoyaApi api, Trace trace) throws Exception {
-        boolean usePostgreSQL = Boolean.TRUE.equals(preferences.getBoolean(ConfigMenu.USE_POSTGRESQL_CFG_KEY));
-        
-        if (usePostgreSQL) {
-            return createPostgreSQLStorage(preferences, api, trace);
-        } else {
-            return createSQLiteStorage(storeName, api, trace);
-        }
-    }
-
-    /**
-     * Create SQLite storage instance.
-     */
-    private static ActivityStorage createSQLiteStorage(String storeName, MontoyaApi api, Trace trace) throws Exception {
-        return new ActivityLogger(storeName, api, trace);
+    static ActivityStorage createStorage(Preferences preferences, MontoyaApi api, Trace trace) throws Exception {
+        return createPostgreSQLStorage(preferences, api, trace);
     }
 
     /**
