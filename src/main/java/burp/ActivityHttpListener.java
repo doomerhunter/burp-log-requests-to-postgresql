@@ -4,6 +4,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.handler.*;
 
 import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Handle the recording of HTTP activities into the activity log storage.
@@ -19,6 +20,12 @@ class ActivityHttpListener implements HttpHandler {
      * Ref on project logger.
      */
     private Trace trace;
+
+    /**
+     * Map to track request start times for response time calculation.
+     * Uses request hash as key to avoid memory leaks with request objects.
+     */
+    private final ConcurrentHashMap<Integer, Long> requestStartTimes = new ConcurrentHashMap<>();
 
     /**
      * Constructor.
@@ -45,12 +52,20 @@ class ActivityHttpListener implements HttpHandler {
     @Override
     public RequestToBeSentAction handleHttpRequestToBeSent(HttpRequestToBeSent requestToBeSent)
     {
+        String toolName = requestToBeSent.toolSource().toolType().toolName();
+        
+        // Always track request start time for response time calculation
+        if (ConfigMenu.INCLUDE_HTTP_RESPONSE_CONTENT && this.mustLogRequest(requestToBeSent, toolName)) {
+            int requestHash = generateRequestHash(requestToBeSent);
+            requestStartTimes.put(requestHash, System.currentTimeMillis());
+        }
+        
         //Check if the response will be logged as well. If yes, wait until response is received.
         if (!ConfigMenu.INCLUDE_HTTP_RESPONSE_CONTENT) {
             try {
-                String toolName = requestToBeSent.toolSource().toolType().toolName();
                 if (this.mustLogRequest(requestToBeSent, toolName)) {
-                    this.activityStorage.logEvent(requestToBeSent, null, toolName);
+                    // Use enhanced logging even for request-only scenarios
+                    this.activityStorage.logEventEnhanced(requestToBeSent, null, toolName, 0);
                 }
             } catch (Exception e) {
                 this.trace.writeLog("Cannot save request: " + e.getMessage());
@@ -70,13 +85,31 @@ class ActivityHttpListener implements HttpHandler {
                 //Save the information of the current request if the message is an HTTP response and according to the restriction options
                 String toolName = responseReceived.toolSource().toolType().toolName();
                 if (this.mustLogRequest(responseReceived.initiatingRequest(), toolName)) {
-                    this.activityStorage.logEvent(responseReceived.initiatingRequest(), responseReceived, toolName);
+                    // Get request start time for response time calculation
+                    int requestHash = generateRequestHash(responseReceived.initiatingRequest());
+                    Long startTime = requestStartTimes.remove(requestHash);
+                    long requestStartTime = startTime != null ? startTime : 0;
+                    
+                    // Use enhanced logging with timing information
+                    this.activityStorage.logEventEnhanced(responseReceived.initiatingRequest(), responseReceived, toolName, requestStartTime);
                 }
             } catch (Exception e) {
                 this.trace.writeLog("Cannot save response: " + e.getMessage());
             }
         }
         return ResponseReceivedAction.continueWith(responseReceived);
+    }
+
+    /**
+     * Generate a hash for request tracking that doesn't hold references to the request object.
+     * This prevents memory leaks while allowing us to correlate requests with responses.
+     */
+    private int generateRequestHash(HttpRequest request) {
+        // Generate hash based on URL, method, and a portion of headers/body
+        // This should be unique enough for correlation but not hold object references
+        String hashSource = request.url() + "|" + request.method() + "|" + 
+                           (request.body() != null ? request.body().hashCode() : 0);
+        return hashSource.hashCode();
     }
 
     /**
