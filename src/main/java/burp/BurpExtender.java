@@ -7,6 +7,8 @@ import javax.swing.SwingUtilities;
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.persistence.Preferences;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
 
 
 /**
@@ -33,6 +35,9 @@ public class BurpExtender implements BurpExtension {
             Trace trace = new Trace(this.api);
             
             Boolean isLoggingPaused = Boolean.TRUE.equals(preferences.getBoolean(ConfigMenu.PAUSE_LOGGING_CFG_KEY));
+            
+            ActivityStorage activityStorage = null;
+            ActivityHttpListener activityHttpListener = null;
             
             if (!isLoggingPaused) {
                 // Check if PostgreSQL is configured
@@ -97,9 +102,22 @@ public class BurpExtender implements BurpExtension {
                 this.api.logging().logToOutput("Logging is paused.");
             }
             
-            //Init storage and HTTP listener
-            ActivityStorage activityStorage = ActivityStorageFactory.createStorage(preferences, this.api, trace);
-            ActivityHttpListener activityHttpListener = new ActivityHttpListener(activityStorage, trace);
+            // Try to create storage, but handle connection failures gracefully
+            try {
+                activityStorage = ActivityStorageFactory.createStorage(preferences, this.api, trace);
+                activityHttpListener = new ActivityHttpListener(activityStorage, trace);
+            } catch (Exception e) {
+                String errMsg = "Cannot connect to PostgreSQL database: " + e.getMessage() + "\n\rLogging will be paused. You can reconfigure the connection later.";
+                this.api.logging().raiseErrorEvent(errMsg);
+                JOptionPane.showMessageDialog(burpFrame, errMsg, extensionName, JOptionPane.WARNING_MESSAGE);
+                
+                // Pause logging and create a dummy storage
+                preferences.setBoolean(ConfigMenu.PAUSE_LOGGING_CFG_KEY, Boolean.TRUE);
+                // Create a dummy storage that does nothing
+                activityStorage = new DummyActivityStorage();
+                activityHttpListener = new ActivityHttpListener(activityStorage, trace);
+            }
+            
             //Setup the configuration menu
             configMenu = new ConfigMenu(this.api, trace, activityStorage, activityHttpListener);
             SwingUtilities.invokeLater(configMenu);
@@ -112,6 +130,30 @@ public class BurpExtender implements BurpExtension {
             this.api.logging().raiseErrorEvent(errMsg);
             //Notification of the error using the UI
             JOptionPane.showMessageDialog(burpFrame, errMsg, extensionName, JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    // Add a dummy storage class for when connection fails
+    private static class DummyActivityStorage implements ActivityStorage {
+        @Override
+        public void logEvent(HttpRequest request, HttpResponse response, String tool) throws Exception {
+            // Do nothing - logging is paused
+        }
+        
+        @Override
+        public void logEventEnhanced(HttpRequest request, HttpResponse response, String tool, long requestStartTime) throws Exception {
+            // Do nothing - logging is paused
+        }
+        
+        @Override
+        public DBStats getEventsStats() throws Exception {
+            // Return empty stats since no data is being logged
+            return new DBStats(0, 0, 0, 0, 0);
+        }
+        
+        @Override
+        public void extensionUnloaded() {
+            // Do nothing
         }
     }
 }
